@@ -1,0 +1,22 @@
+# Environment files with actual secrets (if any)
+.env.local
+.env.production
+.env.backup
+
+# Cloudflare credentials
+cloudflared/tunnel-credentials.json
+cloudflared/*.pem
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+.DS_Store
+*~
+
+# Container runtime files
+.container-*
+
+# Note: .env is now safe to commit (contains only placeholders)

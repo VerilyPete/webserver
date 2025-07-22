@@ -1,0 +1,63 @@
+name: Deploy to Production
+
+on:
+  repository_dispatch:
+    types: [website-updated]
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'scripts/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - name: Checkout infrastructure code
+      uses: actions/checkout@v4
+      
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+        
+    - name: Add server to known hosts
+      run: |
+        ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+        
+    - name: Deploy to production server
+      run: |
+        ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          cd ~/webserver
+          
+          echo "🚀 Starting production deployment with secrets..."
+          
+          # Pull latest infrastructure code
+          git pull origin main
+          
+          # Export secrets from GitHub Actions
+          export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
+          export HOSTNAME="${{ secrets.HOSTNAME }}"
+          export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
+          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          export SERVER_HOST="${{ secrets.SERVER_HOST }}"
+          export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
+          
+          # Deploy with secret injection
+          ./scripts/deploy-with-secrets.sh
+          
+          echo "✅ Production deployment complete!"
+        EOF
+        
+    - name: Verify deployment
+      run: |
+        sleep 30
+        if curl -f https://mclaurinquist.com; then
+          echo "✅ Production site is live!"
+        else
+          echo "❌ Production deployment verification failed"
+          exit 1
+        fi
