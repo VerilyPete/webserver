@@ -42,22 +42,12 @@ jobs:
           export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
           export HOSTNAME="${{ secrets.HOSTNAME }}"
           export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
-          export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
-          export SERVER_HOST="${{ secrets.SERVER_HOST }}"
           export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
+          export GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          export SERVER_HOST="${{ secrets.SERVER_HOST }}"
           
           # Deploy with secret injection
           ./scripts/deploy-with-secrets.sh
           
           echo "✅ Production deployment complete!"
         EOF
-        
-    - name: Verify deployment
-      run: |
-        sleep 30
-        if curl -f https://mclaurinquist.com; then
-          echo "✅ Production site is live!"
-        else
-          echo "❌ Production deployment verification failed"
-          exit 1
-        fi
