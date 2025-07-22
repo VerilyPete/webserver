@@ -23,7 +23,7 @@ cp .env .env.backup
 sed -i "s/__TAILSCALE_AUTH_KEY__/${TAILSCALE_AUTH_KEY}/" .env
 sed -i "s/__HOSTNAME__/${HOSTNAME}/" .env
 sed -i "s/__CLOUDFLARE_TUNNEL_TOKEN__/${CLOUDFLARE_TUNNEL_TOKEN}/" .env
-sed -i "s/__GITHUB_TOKEN__/${GITHUB_TOKEN}/" .env
+sed -i "s/__GHCR_TOKEN__/${GHCR_TOKEN}/" .env
 sed -i "s/__SERVER_HOST__/${SERVER_HOST}/" .env
 sed -i "s|__FORMSPREE_ENDPOINT__|${FORMSPREE_ENDPOINT}|" .env
 
