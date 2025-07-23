@@ -56,32 +56,59 @@ jobs:
         with:
           command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file fixed_podman_cloud_init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
 
-      - name: Debug OCI configuration
+      - name: Debug environment variables
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
         run: |
-          echo "=== OCI CLI Version ==="
-          ~/.local/bin/oci --version
+          echo "=== GitHub Actions Environment ==="
+          echo "GITHUB_ACTOR: $GITHUB_ACTOR"
+          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
           
-          echo "=== OCI Config Check ==="
-          ~/.local/bin/oci setup config-validation || true
-          
-          echo "=== Environment Variables ==="
-          echo "OCI_CLI_USER: ${OCI_CLI_USER:0:20}..."
-          echo "OCI_CLI_TENANCY: ${OCI_CLI_TENANCY:0:20}..."
+          echo "=== OCI Environment Variables (partial) ==="
+          echo "OCI_CLI_USER: ${OCI_CLI_USER:0:25}..."
+          echo "OCI_CLI_TENANCY: ${OCI_CLI_TENANCY:0:25}..."
           echo "OCI_CLI_REGION: $OCI_CLI_REGION"
           echo "OCI_CLI_FINGERPRINT: $OCI_CLI_FINGERPRINT"
           
-          echo "=== Simple Test Command ==="
-          ~/.local/bin/oci iam region list --output table || echo "Failed with exit code $?"
+          echo "=== Validating OCID Formats ==="
+          if [[ $OCI_CLI_USER == ocid1.user.oc1.* ]]; then
+            echo "✅ User OCID format looks correct"
+          else
+            echo "❌ User OCID format looks wrong - should start with 'ocid1.user.oc1.'"
+          fi
+          
+          if [[ $OCI_CLI_TENANCY == ocid1.tenancy.oc1.* ]]; then
+            echo "✅ Tenancy OCID format looks correct"  
+          else
+            echo "❌ Tenancy OCID format looks wrong - should start with 'ocid1.tenancy.oc1.'"
+          fi
+          
+          if [[ $OCI_CLI_FINGERPRINT =~ ^[a-f0-9]{2}(:[a-f0-9]{2}){15}$ ]]; then
+            echo "✅ Fingerprint format looks correct"
+          else
+            echo "❌ Fingerprint format looks wrong - should be 16 colon-separated hex pairs"
+          fi
 
-      - name: Debug OCI connectivity
+      - name: Test basic OCI connectivity
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 1
         continue-on-error: true
+        id: test_connection
         with:
           command: 'iam region list'
           silent: false
+
+      - name: Debug OCI connection result
+        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        run: |
+          echo "=== OCI Connection Test Result ==="
+          if [ "${{ steps.test_connection.outcome }}" = "success" ]; then
+            echo "✅ OCI connection successful"
+            echo "Regions output: ${{ steps.test_connection.outputs.output }}"
+          else
+            echo "❌ OCI connection failed"
+            echo "This suggests an authentication issue with your OCI credentials"
+          fi
 
       - name: Find existing instance (update)
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
