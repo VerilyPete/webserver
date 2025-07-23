@@ -126,7 +126,7 @@ jobs:
         id: get_instance_ip
         with:
           command: 'compute instance list-vnics --instance-id "${{ steps.find_instance.outputs.output }}"'
-          query: 'data[0]."public-ip"'
+          query: 'data[0].\"public-ip\"'
 
       - name: Update existing infrastructure
         if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.find_instance.outputs.output != 'null' && steps.find_instance.outputs.output != ''
@@ -184,7 +184,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: 'compute instance get --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
-          query: 'data.{id: id, name: \"display-name\", state: "lifecycle-state", shape: shape, region: region}'
+          query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
       - name: Get new instance IP (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
@@ -192,7 +192,7 @@ jobs:
         id: get_new_ip
         with:
           command: 'compute instance list-vnics --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
-          query: 'data[0]."public-ip"'
+          query: 'data[0].\"public-ip\"'
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
@@ -284,7 +284,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?contains(\"display-name\", `web-server`)].{Name:\"display-name\", ID:id, Created:"time-created"}'
+          query: 'data[?contains(\"display-name\", `web-server`)].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
           silent: false
 
       - name: Cleanup instructions
