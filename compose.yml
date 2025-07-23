@@ -12,11 +12,8 @@ services:
   web:
     image: localhost/webserver-web:latest
     network_mode: "container:web-pod"
-    volumes:
-      - website-data:/usr/share/nginx/html/src:z
     depends_on:
       - web-pod
-      - git-sync
     restart: unless-stopped
 
   # Tailscale for private networking - using official image
@@ -37,27 +34,13 @@ services:
       - web-pod
     restart: unless-stopped
 
-  # Git sync service
-  git-sync:
-    image: localhost/webserver-git-sync:latest
-    volumes:
-      - website-data:/git:z
-    environment:
-      - SYNC_INTERVAL=${SYNC_INTERVAL}
-      - REPO_URL=${REPO_URL}
-    restart: unless-stopped
-
   # Cloudflared tunnel
   cloudflared:
     image: cloudflare/cloudflared:latest
     command: tunnel --config /etc/cloudflared/config.yml run
-    volumes:
-      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro,z
-      - ./cloudflared/tunnel-credentials.json:/etc/cloudflared/tunnel-credentials.json:ro,z
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     restart: unless-stopped
 
 volumes:
-  website-data:
   tailscale-data:
