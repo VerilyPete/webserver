@@ -53,47 +53,9 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 15
         id: create_instance
-        continue-on-error: true
         with:
           command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
           silent: false
-
-      - name: Find newly created instance (fallback)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: find_new_instance
-        with:
-          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?\"display-name\" == `${{ steps.hostname.outputs.hostname }}`].id | [0]'
-          silent: false
-
-      - name: Set instance ID for subsequent steps
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        id: set_instance_id
-        run: |
-          # Try to get instance ID from create_instance output first
-          if [ "${{ steps.create_instance.outcome }}" = "success" ] && [ -n '${{ steps.create_instance.outputs.output }}' ]; then
-            INSTANCE_ID=$(echo '${{ steps.create_instance.outputs.output }}' | jq -r '.data.id // empty' 2>/dev/null)
-            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ]; then
-              echo "Using instance ID from creation output: $INSTANCE_ID"
-              echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-              echo "source=creation" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          fi
-          
-          # Fallback to finding by hostname
-          INSTANCE_ID="${{ steps.find_new_instance.outputs.output }}"
-          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ]; then
-            echo "Using instance ID from search: $INSTANCE_ID"
-            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-            echo "source=search" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Could not find instance with hostname: ${{ steps.hostname.outputs.hostname }}"
-            echo "instance_id=" >> $GITHUB_OUTPUT
-            echo "source=none" >> $GITHUB_OUTPUT
-            exit 1
-          fi
 
       - name: Debug environment variables
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
@@ -243,24 +205,24 @@ jobs:
           exit 1
 
       - name: Display new instance info (fresh deploy)
-        if: (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch') && steps.set_instance_id.outputs.source != 'none'
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         continue-on-error: true
         with:
-          command: 'compute instance get --instance-id "${{ steps.set_instance_id.outputs.instance_id }}"'
+          command: 'compute instance get --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
           query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
       - name: Get new instance IP (fresh deploy)
-        if: (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch') && steps.set_instance_id.outputs.source != 'none'
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: get_new_ip
         continue-on-error: true
         with:
-          command: 'compute instance list-vnics --instance-id "${{ steps.set_instance_id.outputs.instance_id }}"'
+          command: 'compute instance list-vnics --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
           query: 'data[0].\"public-ip\"'
 
       - name: Setup SSH key for fresh deploy
-        if: (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch') && steps.set_instance_id.outputs.source != 'none'
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
@@ -268,7 +230,7 @@ jobs:
           chmod 700 ~/.ssh
 
       - name: Wait for cloud-init and services to be ready
-        if: (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch') && steps.set_instance_id.outputs.source != 'none'
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         timeout-minutes: 10
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
@@ -326,7 +288,7 @@ jobs:
           echo ""
           if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "🆕 New instance created:"
-            echo "   Instance ID: ${{ steps.set_instance_id.outputs.instance_id }}"
+            echo "   Instance ID: ${{ fromJson(steps.create_instance.outputs.output).data.id }}"
             echo "   Public IP: ${{ steps.get_new_ip.outputs.output }}"
             echo "   Hostname: ${{ steps.hostname.outputs.hostname }}"
           else
