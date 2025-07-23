@@ -52,34 +52,14 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: create_instance
         with:
-          command: |
-            compute instance launch \
-              --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-              --shape "VM.Standard.A1.Flex" \
-              --shape-config '{"memoryInGBs":6,"ocpus":1}' \
-              --image-id "${{ secrets.OCI_IMAGE_ID }}" \
-              --subnet-id "${{ secrets.OCI_SUBNET_ID }}" \
-              --user-data-file fixed_podman_cloud_init.yml \
-              --display-name "${{ steps.hostname.outputs.hostname }}" \
-              --metadata "{
-                \"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",
-                \"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",
-                \"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",
-                \"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"
-              }" \
-              --wait-for-state RUNNING \
-              --max-wait-seconds 300
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file fixed_podman_cloud_init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 300'
 
       - name: Find existing instance (update)
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: find_instance
         with:
-          command: |
-            compute instance list \
-              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-              --lifecycle-state RUNNING
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
           query: "data[?contains(\"display-name\", 'web-server')].id | [0]"
 
       - name: Get instance IP and update (update)
@@ -87,9 +67,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: get_instance_ip
         with:
-          command: |
-            compute instance list-vnics \
-              --instance-id "${{ steps.find_instance.outputs.output }}"
+          command: 'compute instance list-vnics --instance-id "${{ steps.find_instance.outputs.output }}"'
           query: "data[0].\"public-ip\""
 
       - name: Update existing infrastructure
@@ -142,9 +120,7 @@ jobs:
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
-          command: |
-            compute instance get \
-              --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"
+          command: 'compute instance get --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
           query: "data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}"
 
       - name: Get new instance IP (fresh deploy)
@@ -152,9 +128,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: get_new_ip
         with:
-          command: |
-            compute instance list-vnics \
-              --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"
+          command: 'compute instance list-vnics --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
           query: "data[0].\"public-ip\""
 
       - name: Verify deployment
@@ -192,10 +166,7 @@ jobs:
       - name: List old instances for manual cleanup
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
-          command: |
-            compute instance list \
-              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-              --lifecycle-state RUNNING
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
           query: "data[?contains(\"display-name\", 'web-server')].{Name:\"display-name\", ID:id, Created:\"time-created\"}"
           silent: false
 
