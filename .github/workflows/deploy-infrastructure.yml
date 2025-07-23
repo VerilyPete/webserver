@@ -38,15 +38,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup OCI CLI
-        uses: oracle-actions/configure-oci-cli@v1.3.0
-        with:
-          user: ${{ secrets.OCI_CLI_USER }}
-          tenancy: ${{ secrets.OCI_CLI_TENANCY }}
-          region: ${{ secrets.OCI_CLI_REGION }}
-          fingerprint: ${{ secrets.OCI_CLI_FINGERPRINT }}
-          key: ${{ secrets.OCI_CLI_KEY_CONTENT }}
-
       - name: Generate unique hostname
         id: hostname
         run: |
@@ -58,111 +49,160 @@ jobs:
 
       - name: Deploy new instance (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        run: |
-          # Create new instance with cloud-init
-          oci compute instance launch \
-            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-            --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"memoryInGBs":6,"ocpus":1}' \
-            --image-id "${{ secrets.OCI_IMAGE_ID }}" \
-            --subnet-id "${{ secrets.OCI_SUBNET_ID }}" \
-            --user-data-file cloud-init.yml \
-            --display-name "${{ steps.hostname.outputs.hostname }}" \
-            --metadata "{
-              \"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",
-              \"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",
-              \"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",
-              \"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"
-            }" \
-            --wait-for-state RUNNING \
-            --max-wait-seconds 300
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_instance
+        with:
+          command: |
+            compute instance launch \
+              --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"memoryInGBs":6,"ocpus":1}' \
+              --image-id "${{ secrets.OCI_IMAGE_ID }}" \
+              --subnet-id "${{ secrets.OCI_SUBNET_ID }}" \
+              --user-data-file fixed_podman_cloud_init.yml \
+              --display-name "${{ steps.hostname.outputs.hostname }}" \
+              --metadata "{
+                \"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",
+                \"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",
+                \"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",
+                \"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"
+              }" \
+              --wait-for-state RUNNING \
+              --max-wait-seconds 300
 
-      - name: Update existing infrastructure (update)
+      - name: Find existing instance (update)
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: find_instance
+        with:
+          command: |
+            compute instance list \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --lifecycle-state RUNNING
+          query: "data[?contains(\"display-name\", 'web-server')].id | [0]"
+
+      - name: Get instance IP and update (update)
+        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: get_instance_ip
+        with:
+          command: |
+            compute instance list-vnics \
+              --instance-id "${{ steps.find_instance.outputs.output }}"
+          query: "data[0].\"public-ip\""
+
+      - name: Update existing infrastructure
+        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.find_instance.outputs.output != 'null' && steps.find_instance.outputs.output != ''
         run: |
-          # Find existing instance by tag or name pattern
-          INSTANCE_ID=$(oci compute instance list \
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-            --lifecycle-state RUNNING \
-            --query "data[?contains(\"display-name\", 'web-server')].id | [0]" \
-            --raw-output)
+          PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
+          PUBLIC_IP=$(echo $PUBLIC_IP | tr -d '"')
           
-          if [ "$INSTANCE_ID" != "null" ] && [ -n "$INSTANCE_ID" ]; then
-            echo "Found instance: $INSTANCE_ID"
+          echo "Found instance with IP: $PUBLIC_IP"
+          
+          # Wait for SSH to be available
+          echo "Waiting for SSH access..."
+          for i in {1..30}; do
+            if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
+              echo "SSH connection successful"
+              break
+            fi
+            echo "Attempt $i/30 failed, waiting 10 seconds..."
+            sleep 10
+          done
+          
+          # Update the running infrastructure
+          ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP << 'EOF'
+            cd ~/web-infra
+            git pull origin main
             
-            # Get the public IP
-            PUBLIC_IP=$(oci compute instance list-vnics \
-              --instance-id "$INSTANCE_ID" \
-              --query "data[0].\"public-ip\"" \
-              --raw-output)
+            # Update environment with latest secrets
+            export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
+            export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
+            export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
+            sudo /usr/local/bin/create-env-from-metadata.sh
             
-            echo "Instance IP: $PUBLIC_IP"
+            # Restart services
+            systemctl --user restart web-infra-pod.service
             
-            # Wait for SSH to be available
-            echo "Waiting for SSH access..."
-            for i in {1..30}; do
-              if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
-                echo "SSH connection successful"
-                break
-              fi
-              echo "Attempt $i/30 failed, waiting 10 seconds..."
-              sleep 10
-            done
-            
-            # Update the running infrastructure
-            ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP << 'EOF'
-              cd ~/web-infra
-              git pull origin main
-              
-              # Update environment with latest secrets
-              sudo /usr/local/bin/create-env-from-metadata.sh
-              
-              # Restart services
-              systemctl --user restart web-infra-pod.service
-              
-              # Wait a moment and check status
-              sleep 5
-              systemctl --user status web-infra-pod.service
-              podman pod ps
-            EOF
-          else
-            echo "No running instance found with 'web-server' in the name"
-            echo "Use 'fresh_deploy' to create a new instance"
-            exit 1
-          fi
+            # Wait a moment and check status
+            sleep 5
+            systemctl --user status web-infra-pod.service
+            podman pod ps
+          EOF
+
+      - name: Handle no existing instance
+        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && (steps.find_instance.outputs.output == 'null' || steps.find_instance.outputs.output == '')
+        run: |
+          echo "❌ No running instance found with 'web-server' in the name"
+          echo "💡 Use 'fresh_deploy' to create a new instance"
+          exit 1
+
+      - name: Display new instance info (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: |
+            compute instance get \
+              --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"
+          query: "data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}"
+
+      - name: Get new instance IP (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: get_new_ip
+        with:
+          command: |
+            compute instance list-vnics \
+              --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"
+          query: "data[0].\"public-ip\""
 
       - name: Verify deployment
         run: |
           echo "✅ Deployment completed successfully!"
-          echo "🔍 Check your Tailscale admin console for the new device"
-          echo "🌐 Web server should be accessible via Tailscale network"
-          echo "📊 Monitor logs: ssh opc@<instance-ip> 'podman logs web'"
+          echo ""
+          if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "🆕 New instance created:"
+            echo "   Instance ID: ${{ fromJson(steps.create_instance.outputs.output).data.id }}"
+            echo "   Public IP: ${{ steps.get_new_ip.outputs.output }}"
+            echo "   Hostname: ${{ steps.hostname.outputs.hostname }}"
+          else
+            echo "🔄 Existing instance updated:"
+            echo "   Instance ID: ${{ steps.find_instance.outputs.output }}"
+            echo "   Public IP: ${{ steps.get_instance_ip.outputs.output }}"
+          fi
+          echo ""
+          echo "🔍 Check your Tailscale admin console for the device"
+          echo "🌐 Web server will be accessible at http://[tailscale-ip]:8081"
+          echo "📊 Monitor with: ssh opc@[instance-ip] 'podman pod ps'"
 
   cleanup-old-instances:
     runs-on: ubuntu-latest
     needs: deploy
     if: github.event.inputs.deploy_type == 'fresh_deploy'
     
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+      OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+    
     steps:
-      - name: Setup OCI CLI
-        uses: oracle-actions/configure-oci-cli@v1.3.0
-        with:
-          user: ${{ secrets.OCI_CLI_USER }}
-          tenancy: ${{ secrets.OCI_CLI_TENANCY }}
-          region: ${{ secrets.OCI_CLI_REGION }}
-          fingerprint: ${{ secrets.OCI_CLI_FINGERPRINT }}
-          key: ${{ secrets.OCI_CLI_KEY_CONTENT }}
-
       - name: List old instances for manual cleanup
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: |
+            compute instance list \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --lifecycle-state RUNNING
+          query: "data[?contains(\"display-name\", 'web-server')].{Name:\"display-name\", ID:id, Created:\"time-created\"}"
+          silent: false
+
+      - name: Cleanup instructions
         run: |
-          echo "🧹 Old instances that may need cleanup:"
-          oci compute instance list \
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-            --lifecycle-state RUNNING \
-            --query "data[?contains(\"display-name\", 'web-server')].{Name:\"display-name\", ID:id, Created:\"time-created\"}" \
-            --output table
-          
           echo ""
-          echo "💡 To terminate old instances manually:"
-          echo "oci compute instance terminate --instance-id <INSTANCE_ID> --force"
+          echo "🧹 Old instances listed above may need cleanup"
+          echo "💡 To terminate old instances:"
+          echo "   Use the OCI Console or run:"
+          echo "   oci compute instance terminate --instance-id <INSTANCE_ID> --force"
