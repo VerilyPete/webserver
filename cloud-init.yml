@@ -652,32 +652,58 @@ write_files:
 
 # Create application directory structure
 runcmd:
+  # Wait for write_files to complete
+  - sleep 5
+
   # Create directories and set ownership
   - mkdir -p /opt/app
   - mkdir -p /home/opc/.config/containers
   - mkdir -p /home/opc/.config/systemd/user
+  - mkdir -p /etc/systemd/journald.conf.d
   - chown -R opc:opc /opt/app
   - chown -R opc:opc /home/opc/.config
 
-  # Ensure scripts are executable (write_files should have done this, but double-check)
-  - chmod +x /usr/local/bin/minimize-system.sh
-  - chmod +x /usr/local/bin/disable-unnecessary-services.sh
-  - chmod +x /usr/local/bin/setup-podman-user.sh
-  - chmod +x /usr/local/bin/podman-cleanup.sh
-  - chmod +x /usr/local/bin/generate-podman-service.sh
-  - chmod +x /usr/local/bin/deploy-web-infra.sh
-  - chmod +x /usr/local/bin/start-web-pod.sh
-  - chmod +x /usr/local/bin/create-env-from-metadata.sh
+  # Verify files exist and set permissions explicitly
+  - |
+    for script in minimize-system.sh disable-unnecessary-services.sh setup-podman-user.sh podman-cleanup.sh generate-podman-service.sh deploy-web-infra.sh start-web-pod.sh create-env-from-metadata.sh; do
+      if [ -f "/usr/local/bin/$script" ]; then
+        chmod +x "/usr/local/bin/$script"
+        echo "Made $script executable"
+      else
+        echo "ERROR: /usr/local/bin/$script not found!"
+      fi
+    done
 
-  # Run system minimization
-  - /usr/local/bin/minimize-system.sh
-  - /usr/local/bin/disable-unnecessary-services.sh
+  # Run system minimization (with error handling)
+  - |
+    if [ -x /usr/local/bin/minimize-system.sh ]; then
+      /usr/local/bin/minimize-system.sh
+    else
+      echo "minimize-system.sh not executable, skipping"
+    fi
 
-  # Apply sysctl optimizations
-  - sysctl -p /etc/sysctl.d/99-podman-optimization.conf
+  - |
+    if [ -x /usr/local/bin/disable-unnecessary-services.sh ]; then
+      /usr/local/bin/disable-unnecessary-services.sh
+    else
+      echo "disable-unnecessary-services.sh not executable, skipping"
+    fi
+
+  # Apply sysctl optimizations (with error handling)
+  - |
+    if [ -f /etc/sysctl.d/99-podman-optimization.conf ]; then
+      sysctl -p /etc/sysctl.d/99-podman-optimization.conf
+    else
+      echo "sysctl config not found, skipping"
+    fi
 
   # Set up Podman user configuration
-  - /usr/local/bin/setup-podman-user.sh
+  - |
+    if [ -x /usr/local/bin/setup-podman-user.sh ]; then
+      /usr/local/bin/setup-podman-user.sh
+    else
+      echo "setup-podman-user.sh not executable, skipping"
+    fi
 
   # Reload systemd and restart journald
   - systemctl daemon-reload
@@ -693,7 +719,12 @@ runcmd:
   - (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
 
   # Deploy web infrastructure
-  - /usr/local/bin/deploy-web-infra.sh
+  - |
+    if [ -x /usr/local/bin/deploy-web-infra.sh ]; then
+      /usr/local/bin/deploy-web-infra.sh
+    else
+      echo "deploy-web-infra.sh not executable, skipping"
+    fi
 
   # Enable the user systemd service for opc
   - sudo -u opc systemctl --user daemon-reload
