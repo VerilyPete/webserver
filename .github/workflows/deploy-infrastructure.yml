@@ -242,7 +242,7 @@ jobs:
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
           echo "Waiting for instance to be fully ready at $PUBLIC_IP..."
@@ -259,12 +259,12 @@ jobs:
           done
           
           # Wait for cloud-init to complete
-          echo "2. Waiting for cloud-init to complete..."
+          echo "2. Waiting for cloud-init to complete (this may take 10-15 minutes on single core)..."
           ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP '
             echo "Checking cloud-init status..."
-            for i in {1..30}; do
+            for i in {1..60}; do
               STATUS=$(sudo cloud-init status --format=status 2>/dev/null || echo "running")
-              echo "Cloud-init status: $STATUS (attempt $i/30)"
+              echo "Cloud-init status: $STATUS (attempt $i/60, $(($i * 30)) seconds elapsed)"
               
               if [ "$STATUS" = "done" ]; then
                 echo "✅ Cloud-init completed successfully"
@@ -276,19 +276,19 @@ jobs:
                 echo "Checking if cloud-init is still running..."
                 if pgrep -f cloud-init >/dev/null; then
                   echo "Cloud-init processes still running, continuing to wait..."
-                  sleep 20
+                  sleep 30
                   continue
                 else
                   echo "❌ Cloud-init has stopped with errors"
                   exit 1
                 fi
               else
-                echo "Cloud-init still running..."
-                sleep 20
+                echo "Cloud-init still running... (will check again in 30 seconds)"
+                sleep 30
               fi
               
-              if [ $i -eq 30 ]; then
-                echo "⚠️  Cloud-init did not complete within timeout"
+              if [ $i -eq 60 ]; then
+                echo "⚠️  Cloud-init did not complete within 30 minutes"
                 echo "Final status check:"
                 sudo cloud-init status --long
                 echo "Continuing anyway..."
@@ -299,15 +299,15 @@ jobs:
           # Wait for web infrastructure to start
           echo "3. Waiting for web infrastructure to start..."
           ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP '
-            for i in {1..20}; do
+            for i in {1..30}; do
               if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
                 echo "✅ Web infrastructure is running"
                 systemctl --user status web-infra-pod.service --no-pager
                 podman pod ps
                 break
               else
-                echo "Web infrastructure not ready yet (attempt $i/20)..."
-                sleep 15
+                echo "Web infrastructure not ready yet (attempt $i/30)..."
+                sleep 20
               fi
             done
           '
