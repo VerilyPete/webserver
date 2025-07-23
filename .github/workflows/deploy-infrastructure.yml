@@ -212,7 +212,12 @@ jobs:
           echo '${{ steps.create_instance.outputs.output }}'
           echo ""
           echo "=== Extracting instance ID ==="
-          INSTANCE_ID=$(echo '${{ steps.create_instance.outputs.output }}' | jq -r '.data.id')
+          # Remove outer quotes and unescape the JSON string
+          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
+          echo "Cleaned JSON:"
+          echo "$CLEAN_JSON"
+          echo ""
+          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
           echo "Extracted instance ID: $INSTANCE_ID"
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
 
