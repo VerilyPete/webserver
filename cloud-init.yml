@@ -2,7 +2,7 @@
 
 # Remove unnecessary packages first to speed up updates
 bootcmd:
-  - dnf remove -y libvirt* qemu* spice* plymouth* kernel-tools perf tuned dmraid kexec-tools crash abrt* libreport* sendmail postfix xinetd telnet-server rsh-server ypbind ypserv tftp tftp-server talk talk-server finger finger-server gcc gcc-c++ make automake autoconf libtool bison flex gdb strace ltrace man man-pages info texinfo || true
+  - dnf remove -y --skip-broken kernel-tools perf tuned kexec-tools libreport-* man man-pages info strace ltrace || true
   - dnf clean all
 
 package_update: true
@@ -106,7 +106,7 @@ write_files:
       if [ -f ".env" ]; then
         source .env
         if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [[ "$TAILSCALE_AUTH_KEY" == tskey-* ]]; then
-          (sleep 10 && sudo -u opc systemctl --user start web-infra-pod.service) &
+          (sleep 15 && export XDG_RUNTIME_DIR="/run/user/$(id -u opc)" && sudo -u opc systemctl --user start web-infra-pod.service) &
         fi
       fi
     owner: root:root
@@ -167,6 +167,8 @@ write_files:
       loginctl enable-linger opc
       if ! grep -q "^opc:" /etc/subuid; then echo "opc:100000:65536" >> /etc/subuid; fi
       if ! grep -q "^opc:" /etc/subgid; then echo "opc:100000:65536" >> /etc/subgid; fi
+      systemctl start user@$(id -u opc).service
+      sleep 2
     owner: root:root
     permissions: '0755'
 
@@ -234,6 +236,27 @@ runcmd:
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /etc/systemd/journald.conf.d
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
+    cat > /home/opc/.config/systemd/user/web-infra-pod.service << 'EOF'
+    [Unit]
+    Description=Web Infrastructure Pod
+    Wants=network-online.target
+    After=network-online.target
+    RequiresMountsFor=%t/containers
+    [Service]
+    Type=forking
+    Restart=on-failure
+    TimeoutStopSec=70
+    WorkingDirectory=%h/web-infra
+    Environment=PODMAN_SYSTEMD_UNIT=%n
+    ExecStartPre=/usr/bin/podman pod create --name web-infra-pod --publish 8081:8081 --replace
+    ExecStart=/usr/bin/bash -c 'cd %h/web-infra && /usr/local/bin/start-web-pod.sh'
+    ExecStop=/usr/bin/podman pod stop web-infra-pod
+    ExecStopPost=/usr/bin/podman pod rm -f web-infra-pod
+    [Install]
+    WantedBy=default.target
+    EOF
+  - chown opc:opc /home/opc/.config/systemd/user/web-infra-pod.service
+  - |
     for script in /usr/local/bin/*.sh; do
       if [ -f "$script" ]; then chmod +x "$script"; fi
     done
@@ -255,9 +278,12 @@ runcmd:
     if [ -x /usr/local/bin/deploy-web-infra.sh ]; then
       /usr/local/bin/deploy-web-infra.sh
     fi
-  - sudo -u opc systemctl --user daemon-reload
+  - |
+    export XDG_RUNTIME_DIR="/run/user/$(id -u opc)"
+    sudo -u opc systemctl --user daemon-reload
   - |
     if [ -f /home/opc/.config/systemd/user/web-infra-pod.service ]; then
+      export XDG_RUNTIME_DIR="/run/user/$(id -u opc)"
       sudo -u opc systemctl --user enable web-infra-pod.service
     fi
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
