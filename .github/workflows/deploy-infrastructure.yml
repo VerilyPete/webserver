@@ -17,12 +17,6 @@ on:
         required: false
         type: string
 
-  push:
-    branches: [main]
-    paths:
-      - 'compose.yml'
-      - '.github/workflows/deploy-infrastructure.yml'
-
 env:
   OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
   OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
@@ -54,11 +48,11 @@ jobs:
         timeout-minutes: 15
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
           silent: false
 
       - name: Debug environment variables
-        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        if: github.event.inputs.deploy_type == 'update'
         run: |
           echo "=== GitHub Actions Environment ==="
           echo "GITHUB_ACTOR: $GITHUB_ACTOR"
@@ -90,7 +84,7 @@ jobs:
           fi
 
       - name: Test basic OCI connectivity
-        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        if: github.event.inputs.deploy_type == 'update'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 1
         continue-on-error: true
@@ -100,7 +94,7 @@ jobs:
           silent: false
 
       - name: Debug OCI connection result
-        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        if: github.event.inputs.deploy_type == 'update'
         run: |
           echo "=== OCI Connection Test Result ==="
           if [ "${{ steps.test_connection.outcome }}" = "success" ]; then
@@ -112,7 +106,7 @@ jobs:
           fi
 
       - name: Find existing instance (update)
-        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        if: github.event.inputs.deploy_type == 'update'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 2
         id: find_instance
@@ -123,7 +117,7 @@ jobs:
           silent: false
 
       - name: Check if instance was found
-        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        if: github.event.inputs.deploy_type == 'update'
         id: check_instance
         run: |
           INSTANCE_ID="${{ steps.find_instance.outputs.output }}"
@@ -138,7 +132,7 @@ jobs:
           fi
 
       - name: Get instance IP and update (update)
-        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'true'
+        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: get_instance_ip
         with:
@@ -146,7 +140,7 @@ jobs:
           query: 'data[0].\"public-ip\"'
 
       - name: Setup SSH key for update
-        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'true'
+        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
@@ -154,7 +148,7 @@ jobs:
           chmod 700 ~/.ssh
 
       - name: Update existing infrastructure
-        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'true'
+        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
         timeout-minutes: 8
         run: |
           PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
@@ -198,7 +192,7 @@ jobs:
           EOF
 
       - name: Handle no existing instance
-        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'false'
+        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'false'
         run: |
           echo "❌ No running instance found with 'web-server' in the name"
           echo "💡 Use 'fresh_deploy' to create a new instance"
