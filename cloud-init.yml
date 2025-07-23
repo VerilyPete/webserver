@@ -90,12 +90,14 @@ write_files:
       #!/bin/bash
       set -e
       cd /home/opc
+      chown opc:opc /home/opc
       if [ ! -d "web-infra" ]; then
         sudo -u opc git clone https://github.com/VerilyPete/web-infra.git
       else
         cd web-infra && sudo -u opc git pull && cd ..
       fi
       cd web-infra
+      chown -R opc:opc /home/opc/web-infra
       /usr/local/bin/create-env-from-metadata.sh
       sudo -u opc podman pull --quiet k8s.gcr.io/pause:3.9
       sudo -u opc podman pull --quiet ghcr.io/verilypete/webserver:latest
@@ -228,17 +230,36 @@ write_files:
     permissions: '0644'
 
 runcmd:
-  - sleep 5
+  - sleep 10
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /etc/systemd/journald.conf.d
   - chown -R opc:opc /opt/app /home/opc/.config
-  - chmod +x /usr/local/bin/*.sh
-  - /usr/local/bin/system-setup.sh
-  - sysctl -p /etc/sysctl.d/99-podman-optimization.conf
+  - |
+    for script in /usr/local/bin/*.sh; do
+      if [ -f "$script" ]; then chmod +x "$script"; fi
+    done
+  - |
+    if [ -x /usr/local/bin/system-setup.sh ]; then
+      /usr/local/bin/system-setup.sh
+    fi
+  - |
+    if [ -f /etc/sysctl.d/99-podman-optimization.conf ]; then
+      sysctl -p /etc/sysctl.d/99-podman-optimization.conf
+    fi
   - systemctl daemon-reload && systemctl restart systemd-journald
-  - firewall-cmd --permanent --remove-service=cockpit --remove-service=dhcpv6-client --add-port=8081/tcp && firewall-cmd --reload
+  - firewall-cmd --permanent --remove-service=cockpit || true
+  - firewall-cmd --permanent --remove-service=dhcpv6-client || true
+  - firewall-cmd --permanent --add-port=8081/tcp
+  - firewall-cmd --reload
   - (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
-  - /usr/local/bin/deploy-web-infra.sh
-  - sudo -u opc systemctl --user daemon-reload && sudo -u opc systemctl --user enable web-infra-pod.service
+  - |
+    if [ -x /usr/local/bin/deploy-web-infra.sh ]; then
+      /usr/local/bin/deploy-web-infra.sh
+    fi
+  - sudo -u opc systemctl --user daemon-reload
+  - |
+    if [ -f /home/opc/.config/systemd/user/web-infra-pod.service ]; then
+      sudo -u opc systemctl --user enable web-infra-pod.service
+    fi
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
   - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron
   - dnf update -y oci-utils
