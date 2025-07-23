@@ -115,21 +115,37 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 2
         id: find_instance
+        continue-on-error: true
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
           query: 'data[?contains(\"display-name\", `web-server`)].id | [0]'
           silent: false
 
-      - name: Get instance IP and update (update)
+      - name: Check if instance was found
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        id: check_instance
+        run: |
+          INSTANCE_ID="${{ steps.find_instance.outputs.output }}"
+          if [ "$INSTANCE_ID" = "null" ] || [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = '""' ]; then
+            echo "No running instance found with 'web-server' in the name"
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "instance_id=" >> $GITHUB_OUTPUT
+          else
+            echo "Found instance ID: $INSTANCE_ID"
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get instance IP and update (update)
+        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'true'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: get_instance_ip
         with:
-          command: 'compute instance list-vnics --instance-id "${{ steps.find_instance.outputs.output }}"'
+          command: 'compute instance list-vnics --instance-id "${{ steps.check_instance.outputs.instance_id }}"'
           query: 'data[0].\"public-ip\"'
 
       - name: Update existing infrastructure
-        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.find_instance.outputs.output != 'null' && steps.find_instance.outputs.output != ''
+        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'true'
         timeout-minutes: 8
         run: |
           PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
@@ -173,7 +189,7 @@ jobs:
           EOF
 
       - name: Handle no existing instance
-        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && (steps.find_instance.outputs.output == 'null' || steps.find_instance.outputs.output == '')
+        if: (github.event.inputs.deploy_type == 'update' || github.event_name == 'push') && steps.check_instance.outputs.found == 'false'
         run: |
           echo "❌ No running instance found with 'web-server' in the name"
           echo "💡 Use 'fresh_deploy' to create a new instance"
