@@ -1,14 +1,7 @@
 #cloud-config
-
-# Minimal Oracle Linux setup for Podman on Ampere A1
-# Takes standard Oracle Linux and strips it down for container workloads
-
 package_update: true
 package_upgrade: true
 
-# Add only essential repositories
-
-# Install only essential packages
 packages:
   - podman
   - buildah
@@ -17,252 +10,100 @@ packages:
   - curl
   - wget
   - tmux
-  # Keep OCI utilities for Oracle Cloud integration
   - oci-utils
 
 write_files:
-  # Podman registries configuration
   - path: /etc/containers/registries.conf
     content: |
       [registries.search]
       registries = ['docker.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.centos.org', 'quay.io', 'ghcr.io']
-      
       [registries.insecure]
       registries = []
-      
       [registries.block]
       registries = []
     owner: root:root
     permissions: '0644'
 
-  # Podman storage configuration
   - path: /etc/containers/storage.conf
     content: |
       [storage]
       driver = "overlay"
       runroot = "/run/containers/storage"
       graphroot = "/var/lib/containers/storage"
-      
       [storage.options]
       additionalimagestores = []
-      
       [storage.options.overlay]
       mountopt = "nodev,metacopy=on"
       size = "20G"
     owner: root:root
     permissions: '0644'
 
-  # Podman containers configuration
   - path: /etc/containers/containers.conf
     content: |
       [containers]
       log_driver = "journald"
       log_size_max = -1
       pids_limit = 2048
-      
       [engine]
       cgroup_manager = "systemd"
       events_logger = "journald"
       runtime = "crun"
-      
       [network]
       network_backend = "netavark"
     owner: root:root
     permissions: '0644'
 
-  # Example Podman systemd service template
-  - path: /opt/app/example-service.service
-    content: |
-      [Unit]
-      Description=Example Podman Container Service
-      Wants=network-online.target
-      After=network-online.target
-      RequiresMountsFor=%t/containers
-      
-      [Service]
-      Restart=on-failure
-      TimeoutStopSec=70
-      ExecStartPre=/bin/rm -f %t/%n.ctr-id
-      ExecStart=/usr/bin/podman run \
-        --cidfile=%t/%n.ctr-id \
-        --cgroups=no-conmon \
-        --rm \
-        --sdnotify=conmon \
-        --replace \
-        --name example-app \
-        --publish 8080:8080 \
-        --env-file /opt/app/.env \
-        your-image:latest
-      ExecStop=/usr/bin/podman stop --ignore --cidfile=%t/%n.ctr-id
-      ExecStopPost=/usr/bin/podman rm -f --ignore --cidfile=%t/%n.ctr-id
-      Type=notify
-      NotifyAccess=all
-      
-      [Install]
-      WantedBy=multi-user.target
-    owner: root:root
-    permissions: '0644'
-
-  # Environment file template - now populated with your actual values
-  - path: /opt/app/.env.template
-    content: |
-      # Copy this to .env and fill in your values
-      TAILSCALE_AUTH_KEY=tskey-auth-xxxxxxxxx
-      HOSTNAME=web-server-minimal
-      CLOUDFLARE_TUNNEL_TOKEN=your-tunnel-token-here
-      APP_PORT=8081
-      APP_ENV=production
-    owner: root:root
-    permissions: '0644'
-
-  # Auto-deploy environment configuration script
   - path: /usr/local/bin/create-env-from-metadata.sh
     content: |
       #!/bin/bash
       set -e
-      
-      echo "Creating environment from cloud metadata and variables..."
-      
-      # Get instance metadata
       INSTANCE_ID=$(curl -s http://169.254.169.254/opc/v1/instance/id 2>/dev/null || echo "unknown")
       REGION=$(curl -s http://169.254.169.254/opc/v1/instance/region 2>/dev/null || echo "unknown")
-      SHAPE=$(curl -s http://169.254.169.254/opc/v1/instance/shape 2>/dev/null || echo "unknown")
-      
-      # Create hostname from instance info
       DEFAULT_HOSTNAME="web-server-${INSTANCE_ID:0:8}"
-      
-      # Use environment variables if provided, otherwise use defaults
       TAILSCALE_KEY="${TAILSCALE_AUTH_KEY:-}"
       CLOUDFLARE_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
       FORMSPREE_ENDPOINT="${FORMSPREE_ENDPOINT:-}"
       HOSTNAME_VAR="${HOSTNAME:-$DEFAULT_HOSTNAME}"
-      
-      # Create .env file
       cat > /home/opc/web-infra/.env << EOF
-      # Auto-generated environment configuration
-      # Generated on: $(date)
-      # Instance: $INSTANCE_ID
-      # Region: $REGION
-      # Shape: $SHAPE
-      
-      # Infrastructure credentials
       TAILSCALE_AUTH_KEY=$TAILSCALE_KEY
       HOSTNAME=$HOSTNAME_VAR
       CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TOKEN
-      
-      # Application configuration
       FORMSPREE_ENDPOINT=$FORMSPREE_ENDPOINT
       APP_PORT=8081
       APP_ENV=production
-      
-      # Oracle Cloud metadata
       OCI_INSTANCE_ID=$INSTANCE_ID
       OCI_REGION=$REGION
-      OCI_SHAPE=$SHAPE
       EOF
-      
       chown opc:opc /home/opc/web-infra/.env
       chmod 600 /home/opc/web-infra/.env
-      
-      echo "Environment file created at /home/opc/web-infra/.env"
-      
-      # Validation and status reporting
-      if [ ! -z "$TAILSCALE_KEY" ] && [[ "$TAILSCALE_KEY" == tskey-* ]]; then
-        echo "✓ Valid Tailscale auth key detected"
-      elif [ ! -z "$TAILSCALE_KEY" ]; then
-        echo "⚠ Warning: Tailscale key provided but doesn't match expected format"
-      else
-        echo "ℹ No Tailscale key provided - service will skip Tailscale setup"
-      fi
-      
-      if [ ! -z "$CLOUDFLARE_TOKEN" ]; then
-        echo "✓ Cloudflare tunnel token provided"
-      else
-        echo "ℹ No Cloudflare token provided - service will skip Cloudflare tunnel"
-      fi
-      
-      if [ ! -z "$FORMSPREE_ENDPOINT" ]; then
-        echo "✓ Formspree endpoint configured"
-      else
-        echo "ℹ No Formspree endpoint provided"
-      fi
-      
-      echo ""
-      echo "Configuration summary:"
-      echo "- Tailscale: $([ ! -z "$TAILSCALE_KEY" ] && echo "Enabled" || echo "Disabled")"
-      echo "- Cloudflare: $([ ! -z "$CLOUDFLARE_TOKEN" ] && echo "Enabled" || echo "Disabled")"
-      echo "- Formspree: $([ ! -z "$FORMSPREE_ENDPOINT" ] && echo "Configured" || echo "Not configured")"
-      echo "- Hostname: $HOSTNAME_VAR"
     owner: root:root
     permissions: '0755'
 
-  # Web infrastructure deployment script
   - path: /usr/local/bin/deploy-web-infra.sh
     content: |
       #!/bin/bash
       set -e
-      
-      echo "Deploying web infrastructure..."
-      
-      # Change to opc user's home directory
       cd /home/opc
-      
-      # Clone the web-infra repository
       if [ ! -d "web-infra" ]; then
-        echo "Cloning web-infra repository..."
         sudo -u opc git clone https://github.com/VerilyPete/web-infra.git
       else
-        echo "Repository already exists, pulling latest changes..."
-        cd web-infra
-        sudo -u opc git pull
-        cd ..
+        cd web-infra && sudo -u opc git pull && cd ..
       fi
-      
-      # Change to the web-infra directory
       cd web-infra
-      
-      # Create environment file from metadata and variables
       /usr/local/bin/create-env-from-metadata.sh
-      
-      # Pull all required images first
-      echo "Pulling container images..."
       sudo -u opc podman pull --quiet k8s.gcr.io/pause:3.9
       sudo -u opc podman pull --quiet ghcr.io/verilypete/webserver:latest
       sudo -u opc podman pull --quiet tailscale/tailscale:latest
       sudo -u opc podman pull --quiet cloudflare/cloudflared:latest
-      
-      echo "Web infrastructure deployment preparation complete!"
-      
-      # Check if we have required environment to auto-start
       if [ -f ".env" ]; then
         source .env
         if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [[ "$TAILSCALE_AUTH_KEY" == tskey-* ]]; then
-          echo "✓ Tailscale key available - will auto-start services"
-          AUTO_START=true
-        else
-          echo "ℹ No valid Tailscale key - manual configuration required"
-          AUTO_START=false
+          (sleep 10 && sudo -u opc systemctl --user start web-infra-pod.service) &
         fi
-      else
-        echo "⚠ No environment file created"
-        AUTO_START=false
-      fi
-      
-      if [ "$AUTO_START" = true ]; then
-        echo "Auto-starting web infrastructure..."
-        # Start the service after a brief delay to ensure everything is ready
-        (sleep 10 && sudo -u opc systemctl --user start web-infra-pod.service) &
-        echo "✓ Web infrastructure will start automatically in 10 seconds"
-      else
-        echo "Manual start required:"
-        echo "1. Edit /home/opc/web-infra/.env with your actual values"
-        echo "2. Run: sudo -u opc systemctl --user start web-infra-pod"
-        echo "3. Check status: sudo -u opc systemctl --user status web-infra-pod"
       fi
     owner: root:root
     permissions: '0755'
 
-  # Systemd service for the web infrastructure pod
   - path: /home/opc/.config/systemd/user/web-infra-pod.service
     content: |
       [Unit]
@@ -270,236 +111,75 @@ write_files:
       Wants=network-online.target
       After=network-online.target
       RequiresMountsFor=%t/containers
-
       [Service]
       Type=forking
       Restart=on-failure
       TimeoutStopSec=70
       WorkingDirectory=%h/web-infra
       Environment=PODMAN_SYSTEMD_UNIT=%n
-      
-      # Create the pod first
       ExecStartPre=/usr/bin/podman pod create --name web-infra-pod --publish 8081:8081 --replace
-      
-      # Start all containers using podman-compose equivalent commands
       ExecStart=/usr/bin/bash -c 'cd %h/web-infra && /usr/local/bin/start-web-pod.sh'
-      
-      # Stop the entire pod
       ExecStop=/usr/bin/podman pod stop web-infra-pod
       ExecStopPost=/usr/bin/podman pod rm -f web-infra-pod
-
       [Install]
       WantedBy=default.target
     owner: opc:opc
     permissions: '0644'
 
-  # Script to start the web pod with proper container orchestration
   - path: /usr/local/bin/start-web-pod.sh
     content: |
       #!/bin/bash
       set -e
-      
-      # Load environment variables
       if [ -f ".env" ]; then
-        set -a
-        source .env
-        set +a
+        set -a && source .env && set +a
       else
-        echo "ERROR: .env file not found. Please create it first."
-        exit 1
+        echo "ERROR: .env file not found" && exit 1
       fi
-      
-      echo "Starting web infrastructure containers..."
-      
-      # Start the pause container (infrastructure)
-      podman run -d \
-        --name web-pod \
-        --pod web-infra-pod \
-        --restart unless-stopped \
-        k8s.gcr.io/pause:3.9
-      
-      # Start the web server
-      podman run -d \
-        --name web \
-        --pod web-infra-pod \
-        --restart unless-stopped \
-        ghcr.io/verilypete/webserver:latest
-      
-      # Start Tailscale (if auth key is provided)
+      podman run -d --name web-pod --pod web-infra-pod --restart unless-stopped k8s.gcr.io/pause:3.9
+      podman run -d --name web --pod web-infra-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
       if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-        podman run -d \
-          --name tailscale \
-          --pod web-infra-pod \
-          --privileged \
-          --restart unless-stopped \
-          --volume tailscale-data:/var/lib/tailscale:z \
-          --volume /dev/net/tun:/dev/net/tun \
-          --cap-add NET_ADMIN \
-          --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
-          --env TS_HOSTNAME="$HOSTNAME" \
-          --env TS_STATE_DIR=/var/lib/tailscale \
+        podman run -d --name tailscale --pod web-infra-pod --privileged --restart unless-stopped \
+          --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
+          --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
           tailscale/tailscale:latest
-        echo "Tailscale container started"
-      else
-        echo "Skipping Tailscale - no auth key provided"
       fi
-      
-      # Start Cloudflared (if tunnel token is provided)
       if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
-        podman run -d \
-          --name cloudflared \
-          --pod web-infra-pod \
-          --restart unless-stopped \
-          --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" \
-          cloudflare/cloudflared:latest \
-          tunnel --no-autoupdate run
-        echo "Cloudflared container started"
-      else
-        echo "Skipping Cloudflared - no tunnel token provided"
+        podman run -d --name cloudflared --pod web-infra-pod --restart unless-stopped \
+          --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" cloudflare/cloudflared:latest tunnel --no-autoupdate run
       fi
-      
-      echo "Web infrastructure started successfully!"
-      echo "Check status with: podman pod ps"
-      echo "View logs with: podman logs <container-name>"
     owner: root:root
     permissions: '0755'
 
-  # System optimization script
-  - path: /usr/local/bin/minimize-system.sh
+  - path: /usr/local/bin/system-setup.sh
     content: |
       #!/bin/bash
       set -e
-      
-      echo "Minimizing Oracle Linux for Podman workload..."
-      
-      # Remove unnecessary packages
-      dnf remove -y \
-        libvirt* \
-        qemu* \
-        spice* \
-        plymouth* \
-        kernel-tools \
-        perf \
-        numactl \
-        irqbalance \
-        tuned \
-        microcode_ctl \
-        dmraid \
-        kexec-tools \
-        crash \
-        abrt* \
-        libreport* \
-        sendmail \
-        postfix \
-        xinetd \
-        telnet-server \
-        rsh-server \
-        ypbind \
-        ypserv \
-        tftp \
-        tftp-server \
-        talk \
-        talk-server \
-        finger \
-        finger-server || true
-      
-      # Remove development packages we don't need
-      dnf remove -y \
-        gcc \
-        gcc-c++ \
-        make \
-        automake \
-        autoconf \
-        libtool \
-        bison \
-        flex \
-        gdb \
-        strace \
-        ltrace || true
-      
-      # Remove documentation to save space
-      dnf remove -y \
-        man \
-        man-pages \
-        info \
-        texinfo || true
-      
-      # Clean package cache
+      dnf remove -y libvirt* qemu* spice* plymouth* kernel-tools perf tuned dmraid kexec-tools crash abrt* libreport* sendmail postfix xinetd telnet-server rsh-server ypbind ypserv tftp tftp-server talk talk-server finger finger-server gcc gcc-c++ make automake autoconf libtool bison flex gdb strace ltrace man man-pages info texinfo || true
       dnf clean all
-      
-      # Remove unnecessary kernel modules (be careful!)
-      # Only remove clearly unused modules for container workloads
-      modprobe -r \
-        bluetooth \
-        btusb \
-        snd* \
-        pcspkr \
-        joydev \
-        gameport || true
-      
-      echo "System minimization complete!"
+      systemctl disable --now bluetooth.service cups.service avahi-daemon.service NetworkManager-wait-online.service ModemManager.service wpa_supplicant.service accounts-daemon.service udisks2.service upower.service rtkit-daemon.service packagekit.service dnf-makecache.timer fstrim.timer systemd-tmpfiles-clean.timer || true
+      systemctl mask plymouth-start.service plymouth-read-write.service plymouth-quit-wait.service plymouth-quit.service || true
+      loginctl enable-linger opc
+      if ! grep -q "^opc:" /etc/subuid; then echo "opc:100000:65536" >> /etc/subuid; fi
+      if ! grep -q "^opc:" /etc/subgid; then echo "opc:100000:65536" >> /etc/subgid; fi
     owner: root:root
     permissions: '0755'
 
-  # Service management script
-  - path: /usr/local/bin/disable-unnecessary-services.sh
-    content: |
-      #!/bin/bash
-      set -e
-      
-      echo "Disabling unnecessary services..."
-      
-      # Disable services that aren't needed for container workloads
-      systemctl disable --now \
-        bluetooth.service \
-        cups.service \
-        avahi-daemon.service \
-        NetworkManager-wait-online.service \
-        ModemManager.service \
-        wpa_supplicant.service \
-        accounts-daemon.service \
-        udisks2.service \
-        upower.service \
-        rtkit-daemon.service \
-        packagekit.service \
-        dnf-makecache.timer \
-        fstrim.timer \
-        systemd-tmpfiles-clean.timer || true
-      
-      # Mask services to prevent them from being started
-      systemctl mask \
-        plymouth-start.service \
-        plymouth-read-write.service \
-        plymouth-quit-wait.service \
-        plymouth-quit.service || true
-      
-      echo "Unnecessary services disabled!"
-    owner: root:root
-    permissions: '0755'
-
-  # Memory optimization
   - path: /etc/sysctl.d/99-podman-optimization.conf
     content: |
-      # Memory optimization for container workloads
       vm.swappiness=10
       vm.dirty_ratio=15
       vm.dirty_background_ratio=5
       vm.max_map_count=262144
-      
-      # Network optimization
       net.core.rmem_max=16777216
       net.core.wmem_max=16777216
       net.ipv4.tcp_rmem=4096 87380 16777216
       net.ipv4.tcp_wmem=4096 65536 16777216
       net.ipv4.tcp_congestion_control=bbr
-      
-      # File system optimization
       fs.file-max=65536
       fs.inotify.max_user_watches=524288
     owner: root:root
     permissions: '0644'
 
-  # Journald configuration for container logs
   - path: /etc/systemd/journald.conf.d/podman.conf
     content: |
       [Journal]
@@ -513,260 +193,52 @@ write_files:
     owner: root:root
     permissions: '0644'
 
-  # Cleanup script for regular maintenance
   - path: /usr/local/bin/podman-cleanup.sh
     content: |
       #!/bin/bash
-      # Regular Podman cleanup script
-      
-      echo "Starting Podman cleanup..."
-      
-      # Clean up containers (for all users)
       for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
         if id "$user" &>/dev/null; then
-          echo "Cleaning up containers for user: $user"
           sudo -u "$user" podman container prune -f 2>/dev/null || true
           sudo -u "$user" podman image prune -af --filter "until=24h" 2>/dev/null || true
           sudo -u "$user" podman volume prune -f 2>/dev/null || true
           sudo -u "$user" podman system prune -af 2>/dev/null || true
         fi
       done
-      
-      # Root cleanup
-      podman container prune -f
-      podman image prune -af --filter "until=24h"
-      podman volume prune -f
-      podman system prune -af
-      
-      # Clean build cache
-      buildah rmi --prune
-      
-      # Clean journal logs
-      journalctl --vacuum-time=7d
-      journalctl --vacuum-size=500M
-      
-      echo "Podman cleanup complete!"
-      echo "Disk usage after cleanup:"
-      df -h
-      podman system df 2>/dev/null || true
+      podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
+      buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
     owner: root:root
     permissions: '0755'
 
-  # User-specific containers configuration
   - path: /home/opc/.config/containers/containers.conf
     content: |
       [containers]
       log_driver = "journald"
       pids_limit = 1024
-
       [engine]
       cgroup_manager = "systemd"
       events_logger = "journald"
       runtime = "crun"
-
       [network]
       network_backend = "netavark"
     owner: opc:opc
     permissions: '0644'
 
-  # Podman user setup script
-  - path: /usr/local/bin/setup-podman-user.sh
-    content: |
-      #!/bin/bash
-      # Set up rootless podman for opc user
-      
-      echo "Setting up rootless Podman for opc user..."
-      
-      # Enable lingering for opc user (allows user services to run without login)
-      loginctl enable-linger opc
-      
-      # Set up subuid/subgid ranges
-      if ! grep -q "^opc:" /etc/subuid; then
-        echo "opc:100000:65536" >> /etc/subuid
-      fi
-      if ! grep -q "^opc:" /etc/subgid; then
-        echo "opc:100000:65536" >> /etc/subgid
-      fi
-      
-      # Create user systemd directories
-      sudo -u opc mkdir -p /home/opc/.config/systemd/user
-      sudo -u opc mkdir -p /home/opc/.config/containers
-      
-      echo "Rootless Podman setup complete for opc user!"
-      echo "User can now run: podman --version"
-      echo "And create systemd user services in ~/.config/systemd/user/"
-    owner: root:root
-    permissions: '0755'
-
-  # Helper script for generating systemd services
-  - path: /usr/local/bin/generate-podman-service.sh
-    content: |
-      #!/bin/bash
-      # Helper script to generate Podman systemd service files
-      
-      if [ $# -lt 2 ]; then
-        echo "Usage: $0 <service-name> <image> [additional-podman-args]"
-        echo "Example: $0 myapp nginx:latest --publish 8080:80 --env-file /opt/app/.env"
-        exit 1
-      fi
-      
-      SERVICE_NAME="$1"
-      IMAGE="$2"
-      shift 2
-      EXTRA_ARGS="$@"
-      
-      cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
-      [Unit]
-      Description=${SERVICE_NAME} Podman Container
-      Wants=network-online.target
-      After=network-online.target
-      RequiresMountsFor=%t/containers
-
-      [Service]
-      Restart=on-failure
-      TimeoutStopSec=70
-      ExecStartPre=/bin/rm -f %t/%n.ctr-id
-      ExecStart=/usr/bin/podman run \\
-        --cidfile=%t/%n.ctr-id \\
-        --cgroups=no-conmon \\
-        --rm \\
-        --sdnotify=conmon \\
-        --replace \\
-        --name ${SERVICE_NAME} \\
-        ${EXTRA_ARGS} \\
-        ${IMAGE}
-      ExecStop=/usr/bin/podman stop --ignore --cidfile=%t/%n.ctr-id
-      ExecStopPost=/usr/bin/podman rm -f --ignore --cidfile=%t/%n.ctr-id
-      Type=notify
-      NotifyAccess=all
-
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-      
-      echo "Created systemd service: /etc/systemd/system/${SERVICE_NAME}.service"
-      echo "Enable with: systemctl enable ${SERVICE_NAME}.service"
-      echo "Start with: systemctl start ${SERVICE_NAME}.service"
-    owner: root:root
-    permissions: '0755'
-
-# Create application directory structure
 runcmd:
-  # Wait for write_files to complete
   - sleep 5
-
-  # Create directories and set ownership
-  - mkdir -p /opt/app
-  - mkdir -p /home/opc/.config/containers
-  - mkdir -p /home/opc/.config/systemd/user
-  - mkdir -p /etc/systemd/journald.conf.d
-  - chown -R opc:opc /opt/app
-  - chown -R opc:opc /home/opc/.config
-
-  # Verify files exist and set permissions explicitly
-  - |
-    for script in minimize-system.sh disable-unnecessary-services.sh setup-podman-user.sh podman-cleanup.sh generate-podman-service.sh deploy-web-infra.sh start-web-pod.sh create-env-from-metadata.sh; do
-      if [ -f "/usr/local/bin/$script" ]; then
-        chmod +x "/usr/local/bin/$script"
-        echo "Made $script executable"
-      else
-        echo "ERROR: /usr/local/bin/$script not found!"
-      fi
-    done
-
-  # Run system minimization (with error handling)
-  - |
-    if [ -x /usr/local/bin/minimize-system.sh ]; then
-      /usr/local/bin/minimize-system.sh
-    else
-      echo "minimize-system.sh not executable, skipping"
-    fi
-
-  - |
-    if [ -x /usr/local/bin/disable-unnecessary-services.sh ]; then
-      /usr/local/bin/disable-unnecessary-services.sh
-    else
-      echo "disable-unnecessary-services.sh not executable, skipping"
-    fi
-
-  # Apply sysctl optimizations (with error handling)
-  - |
-    if [ -f /etc/sysctl.d/99-podman-optimization.conf ]; then
-      sysctl -p /etc/sysctl.d/99-podman-optimization.conf
-    else
-      echo "sysctl config not found, skipping"
-    fi
-
-  # Set up Podman user configuration
-  - |
-    if [ -x /usr/local/bin/setup-podman-user.sh ]; then
-      /usr/local/bin/setup-podman-user.sh
-    else
-      echo "setup-podman-user.sh not executable, skipping"
-    fi
-
-  # Reload systemd and restart journald
-  - systemctl daemon-reload
-  - systemctl restart systemd-journald
-
-  # Configure firewall (minimal rules)
-  - firewall-cmd --permanent --remove-service=cockpit || true
-  - firewall-cmd --permanent --remove-service=dhcpv6-client || true
-  - firewall-cmd --permanent --add-port=8081/tcp
-  - firewall-cmd --reload
-
-  # Set up automatic cleanup
+  - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /etc/systemd/journald.conf.d
+  - chown -R opc:opc /opt/app /home/opc/.config
+  - chmod +x /usr/local/bin/*.sh
+  - /usr/local/bin/system-setup.sh
+  - sysctl -p /etc/sysctl.d/99-podman-optimization.conf
+  - systemctl daemon-reload && systemctl restart systemd-journald
+  - firewall-cmd --permanent --remove-service=cockpit --remove-service=dhcpv6-client --add-port=8081/tcp && firewall-cmd --reload
   - (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
-
-  # Deploy web infrastructure
-  - |
-    if [ -x /usr/local/bin/deploy-web-infra.sh ]; then
-      /usr/local/bin/deploy-web-infra.sh
-    else
-      echo "deploy-web-infra.sh not executable, skipping"
-    fi
-
-  # Enable the user systemd service for opc
-  - sudo -u opc systemctl --user daemon-reload
-  - sudo -u opc systemctl --user enable web-infra-pod.service
-
-  # Remove unnecessary files
-  - rm -rf /var/cache/dnf/*
-  - rm -rf /tmp/*
-  - rm -rf /var/tmp/*
-  
-  # Clear log files
-  - truncate -s 0 /var/log/messages
-  - truncate -s 0 /var/log/secure
-  - truncate -s 0 /var/log/cron
-  
-  # Update OCI utilities but keep minimal
+  - /usr/local/bin/deploy-web-infra.sh
+  - sudo -u opc systemctl --user daemon-reload && sudo -u opc systemctl --user enable web-infra-pod.service
+  - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
+  - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron
   - dnf update -y oci-utils
 
 final_message: |
-  Minimized Oracle Linux with auto-deploying web infrastructure complete!
-  
-  🚀 DEPLOYMENT STATUS:
-  - Repository cloned from GitHub
-  - Container images pulled
-  - Environment auto-configured from deployment variables
-  - Services will auto-start if Tailscale key provided
-  
-  📍 WHAT HAPPENS NEXT:
-  - If TAILSCALE_AUTH_KEY was provided: Services start automatically in ~10 seconds
-  - If no Tailscale key: Manual configuration required
-  
-  🔧 MANUAL COMMANDS (if needed):
-  - Edit config: sudo nano /home/opc/web-infra/.env
-  - Start service: sudo -u opc systemctl --user start web-infra-pod
-  - Check status: sudo -u opc systemctl --user status web-infra-pod
-  - View logs: sudo -u opc podman logs <container-name>
-  
-  🌐 ACCESS:
-  - Web server: http://[instance-ip]:8081
-  - Tailscale: Will appear in your Tailscale admin console if configured
-  
-  📊 MONITORING:
-  - Pod status: sudo -u opc podman pod ps
-  - Container logs: sudo -u opc podman logs web
-  - Service status: sudo -u opc systemctl --user status web-infra-pod
+  Web infrastructure deployed! Access at http://[instance-ip]:8081
+  Manual start: sudo -u opc systemctl --user start web-infra-pod
