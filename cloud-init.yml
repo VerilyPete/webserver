@@ -1,4 +1,10 @@
 #cloud-config
+
+# Remove unnecessary packages first to speed up updates
+bootcmd:
+  - dnf remove -y libvirt* qemu* spice* plymouth* kernel-tools perf tuned dmraid kexec-tools crash abrt* libreport* sendmail postfix xinetd telnet-server rsh-server ypbind ypserv tftp tftp-server talk talk-server finger finger-server gcc gcc-c++ make automake autoconf libtool bison flex gdb strace ltrace man man-pages info texinfo || true
+  - dnf clean all
+
 package_update: true
 package_upgrade: true
 
@@ -154,8 +160,6 @@ write_files:
     content: |
       #!/bin/bash
       set -e
-      dnf remove -y libvirt* qemu* spice* plymouth* kernel-tools perf tuned dmraid kexec-tools crash abrt* libreport* sendmail postfix xinetd telnet-server rsh-server ypbind ypserv tftp tftp-server talk talk-server finger finger-server gcc gcc-c++ make automake autoconf libtool bison flex gdb strace ltrace man man-pages info texinfo || true
-      dnf clean all
       systemctl disable --now bluetooth.service cups.service avahi-daemon.service NetworkManager-wait-online.service ModemManager.service wpa_supplicant.service accounts-daemon.service udisks2.service upower.service rtkit-daemon.service packagekit.service dnf-makecache.timer fstrim.timer systemd-tmpfiles-clean.timer || true
       systemctl mask plymouth-start.service plymouth-read-write.service plymouth-quit-wait.service plymouth-quit.service || true
       loginctl enable-linger opc
