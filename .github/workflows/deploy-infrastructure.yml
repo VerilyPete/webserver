@@ -274,7 +274,7 @@ jobs:
             echo "   Hostname: ${{ steps.hostname.outputs.hostname }}"
           else
             echo "🔄 Existing instance updated:"
-            echo "   Instance ID: ${{ steps.find_instance.outputs.output }}"
+            echo "   Instance ID: ${{ steps.check_instance.outputs.instance_id }}"
             echo "   Public IP: ${{ steps.get_instance_ip.outputs.output }}"
           fi
           echo ""
