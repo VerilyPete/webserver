@@ -56,12 +56,31 @@ jobs:
         with:
           command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file fixed_podman_cloud_init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
 
+      - name: Debug OCI configuration
+        if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
+        run: |
+          echo "=== OCI CLI Version ==="
+          ~/.local/bin/oci --version
+          
+          echo "=== OCI Config Check ==="
+          ~/.local/bin/oci setup config-validation || true
+          
+          echo "=== Environment Variables ==="
+          echo "OCI_CLI_USER: ${OCI_CLI_USER:0:20}..."
+          echo "OCI_CLI_TENANCY: ${OCI_CLI_TENANCY:0:20}..."
+          echo "OCI_CLI_REGION: $OCI_CLI_REGION"
+          echo "OCI_CLI_FINGERPRINT: $OCI_CLI_FINGERPRINT"
+          
+          echo "=== Simple Test Command ==="
+          ~/.local/bin/oci iam region list --output table || echo "Failed with exit code $?"
+
       - name: Debug OCI connectivity
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 1
+        continue-on-error: true
         with:
-          command: 'iam availability-domain list --compartment-id "${{ secrets.OCI_CLI_TENANCY }}"'
+          command: 'iam region list'
           silent: false
 
       - name: Find existing instance (update)
