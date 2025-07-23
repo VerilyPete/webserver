@@ -6,7 +6,7 @@ echo "Building web container with website content..."
 
 # Preserve exported environment variables
 EXPORTED_PUSH_TO_REGISTRY="${PUSH_TO_REGISTRY}"
-EXPORTED_GHCR_TOKEN="${GHCR_TOKEN}"
+EXPORTED_GITHUB_TOKEN="${GITHUB_TOKEN}"
 EXPORTED_FORMSPREE_ENDPOINT="${FORMSPREE_ENDPOINT}"
 
 # Load environment variables from .env
@@ -19,8 +19,8 @@ if [ -n "${EXPORTED_PUSH_TO_REGISTRY}" ]; then
     PUSH_TO_REGISTRY="${EXPORTED_PUSH_TO_REGISTRY}"
 fi
 
-if [ -n "${EXPORTED_GHCR_TOKEN}" ] && [ "${EXPORTED_GHCR_TOKEN}" != "__GHCR_TOKEN__" ]; then
-    GHCR_TOKEN="${EXPORTED_GHCR_TOKEN}"
+if [ -n "${EXPORTED_GITHUB_TOKEN}" ] && [ "${EXPORTED_GITHUB_TOKEN}" != "__GITHUB_TOKEN__" ]; then
+    GITHUB_TOKEN="${EXPORTED_GITHUB_TOKEN}"
 fi
 
 if [ -n "${EXPORTED_FORMSPREE_ENDPOINT}" ] && [ "${EXPORTED_FORMSPREE_ENDPOINT}" != "__FORMSPREE_ENDPOINT__" ]; then
@@ -65,8 +65,8 @@ if [ "${PUSH_TO_REGISTRY}" = "true" ]; then
     echo "Pushing to registry..."
     
     # Login to registry
-    if [ -n "${GHCR_TOKEN}" ] && [ "${GHCR_TOKEN}" != "__GHCR_TOKEN__" ]; then
-        echo "${GHCR_TOKEN}" | podman login ${REGISTRY} -u ${USERNAME} --password-stdin
+    if [ -n "${GITHUB_TOKEN}" ] && [ "${GITHUB_TOKEN}" != "__GITHUB_TOKEN__" ]; then
+        echo "${GITHUB_TOKEN}" | podman login ${REGISTRY} -u ${USERNAME} --password-stdin
         
         # Push images
         podman push ${REGISTRY}/${USERNAME}/${IMAGE_NAME}:${TAG}
@@ -76,13 +76,13 @@ if [ "${PUSH_TO_REGISTRY}" = "true" ]; then
         echo "   ${REGISTRY}/${USERNAME}/${IMAGE_NAME}:${TAG}"
         echo "   ${REGISTRY}/${USERNAME}/${IMAGE_NAME}:${LATEST_TAG}"
     else
-        echo "❌ GHCR_TOKEN not set or is placeholder, cannot push to registry"
+        echo "❌ GITHUB_TOKEN not set or is placeholder, cannot push to registry"
         exit 1
     fi
 else
     echo "Local build complete. To push to registry:"
     echo "  export PUSH_TO_REGISTRY=true"
-    echo "  export GHCR_TOKEN=your-github-token"
+    echo "  export GITHUB_TOKEN=your-github-token"
     echo "  export FORMSPREE_ENDPOINT=https://formspree.io/f/your-form-id"
     echo "  ./scripts/build.sh"
 fi

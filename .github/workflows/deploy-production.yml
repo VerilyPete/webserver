@@ -33,10 +33,7 @@ jobs:
         ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
           cd ~/webserver
           
-          echo "🚀 Starting production deployment with secrets..."
-          
-          # Pull latest infrastructure code
-          git pull origin main
+          echo "🚀 Starting production deployment..."
           
           # Export secrets from GitHub Actions
           export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
@@ -45,8 +42,8 @@ jobs:
           export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
           export GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}"
           export SERVER_HOST="${{ secrets.SERVER_HOST }}"
-          
-          # Deploy with secret injection
-          ./scripts/deploy-with-secrets.sh
+         
+          # Deploy script
+          ./scripts/deploy.sh
           
           echo "✅ Production deployment complete!"
