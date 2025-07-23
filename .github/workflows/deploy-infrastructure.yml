@@ -54,7 +54,7 @@ jobs:
         timeout-minutes: 15
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yaml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
 
       - name: Debug environment variables
         if: github.event.inputs.deploy_type == 'update' || github.event_name == 'push'
