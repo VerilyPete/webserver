@@ -50,4 +50,3 @@ jobs:
           ./scripts/deploy-with-secrets.sh
           
           echo "✅ Production deployment complete!"
-        EOF
