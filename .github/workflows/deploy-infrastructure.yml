@@ -263,16 +263,35 @@ jobs:
           ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP '
             echo "Checking cloud-init status..."
             for i in {1..30}; do
-              if sudo cloud-init status | grep -q "done"; then
+              STATUS=$(sudo cloud-init status --format=status 2>/dev/null || echo "running")
+              echo "Cloud-init status: $STATUS (attempt $i/30)"
+              
+              if [ "$STATUS" = "done" ]; then
                 echo "✅ Cloud-init completed successfully"
                 break
-              elif sudo cloud-init status | grep -q "error"; then
-                echo "❌ Cloud-init failed"
-                sudo cloud-init status
-                exit 1
+              elif [ "$STATUS" = "error" ]; then
+                echo "⚠️  Cloud-init reports error status, checking details..."
+                sudo cloud-init status --long
+                echo ""
+                echo "Checking if cloud-init is still running..."
+                if pgrep -f cloud-init >/dev/null; then
+                  echo "Cloud-init processes still running, continuing to wait..."
+                  sleep 20
+                  continue
+                else
+                  echo "❌ Cloud-init has stopped with errors"
+                  exit 1
+                fi
               else
-                echo "Cloud-init still running (attempt $i/30)..."
+                echo "Cloud-init still running..."
                 sleep 20
+              fi
+              
+              if [ $i -eq 30 ]; then
+                echo "⚠️  Cloud-init did not complete within timeout"
+                echo "Final status check:"
+                sudo cloud-init status --long
+                echo "Continuing anyway..."
               fi
             done
           '
