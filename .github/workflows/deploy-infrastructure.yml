@@ -204,12 +204,24 @@ jobs:
           echo "💡 Use 'fresh_deploy' to create a new instance"
           exit 1
 
+      - name: Debug instance creation output
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        id: parse_instance_id
+        run: |
+          echo "=== Raw create_instance output ==="
+          echo '${{ steps.create_instance.outputs.output }}'
+          echo ""
+          echo "=== Extracting instance ID ==="
+          INSTANCE_ID=$(echo '${{ steps.create_instance.outputs.output }}' | jq -r '.data.id')
+          echo "Extracted instance ID: $INSTANCE_ID"
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         continue-on-error: true
         with:
-          command: 'compute instance get --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
+          command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
           query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
       - name: Get new instance IP (fresh deploy)
@@ -218,7 +230,7 @@ jobs:
         id: get_new_ip
         continue-on-error: true
         with:
-          command: 'compute instance list-vnics --instance-id "${{ fromJson(steps.create_instance.outputs.output).data.id }}"'
+          command: 'compute instance list-vnics --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
           query: 'data[0].\"public-ip\"'
 
       - name: Setup SSH key for fresh deploy
@@ -288,7 +300,7 @@ jobs:
           echo ""
           if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "🆕 New instance created:"
-            echo "   Instance ID: ${{ fromJson(steps.create_instance.outputs.output).data.id }}"
+            echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
             echo "   Public IP: ${{ steps.get_new_ip.outputs.output }}"
             echo "   Hostname: ${{ steps.hostname.outputs.hostname }}"
           else
