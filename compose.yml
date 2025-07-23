@@ -10,7 +10,7 @@ services:
 
   # Nginx web server
   web:
-    image: localhost/webserver-web:latest
+    image: ghcr.io/verilypete/webserver:latest
     network_mode: "container:web-pod"
     depends_on:
       - web-pod
