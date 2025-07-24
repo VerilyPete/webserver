@@ -197,10 +197,32 @@ jobs:
               exit 1
             }
             
+            echo "Ensuring user systemd prerequisites..."
+            # Ensure lingering is enabled for automatic startup
+            if ! loginctl show-user opc | grep -q "Linger=yes"; then
+              echo "Enabling user lingering..."
+              sudo loginctl enable-linger opc
+            fi
+            
+            # Ensure XDG_RUNTIME_DIR is set
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            
+            # Reload systemd user daemon
+            systemctl --user daemon-reload || {
+              echo "⚠️  Could not reload user systemd daemon"
+              # Try to start user systemd instance
+              sudo systemctl start user@$(id -u).service || true
+              sleep 2
+              systemctl --user daemon-reload || true
+            }
+            
             echo "Restarting services..."
             systemctl --user restart web-infra-pod.service || {
               echo "❌ Service restart failed"
-              systemctl --user status web-infra-pod.service --no-pager
+              echo "Checking service status:"
+              systemctl --user status web-infra-pod.service --no-pager || true
+              echo "Checking if service file exists:"
+              ls -la ~/.config/systemd/user/ || true
               exit 1
             }
             
@@ -374,31 +396,129 @@ jobs:
             sudo cloud-init analyze show 2>/dev/null | head -20 || echo "Analysis not available"
           '
           
-          # Wait for web infrastructure to start (up to 5 minutes)
+          # Wait for web infrastructure to start (up to 8 minutes)
           echo "3. Waiting for web infrastructure to start..."
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP '
+            echo "Checking and fixing podman user service prerequisites..."
+            
+            # 1. Ensure lingering is enabled (critical for boot startup)
+            if ! loginctl show-user opc | grep -q "Linger=yes"; then
+              echo "Enabling user lingering for boot startup..."
+              sudo loginctl enable-linger opc
+            else
+              echo "✅ User lingering already enabled"
+            fi
+            
+            # 2. Set up proper runtime directory permissions
+            if [ ! -d "/run/user/$(id -u)" ]; then
+              echo "Creating user runtime directory..."
+              sudo mkdir -p "/run/user/$(id -u)"
+              sudo chown $(id -u):$(id -g) "/run/user/$(id -u)"
+              sudo chmod 700 "/run/user/$(id -u)"
+            fi
+            
+            # 3. Ensure XDG_RUNTIME_DIR is set
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            
+            # 4. Check if systemd user directory exists
+            if [ ! -d "$HOME/.config/systemd/user" ]; then
+              echo "Creating systemd user directory..."
+              mkdir -p "$HOME/.config/systemd/user"
+            fi
+            
+            # 5. Reload systemd user daemon to pick up any changes
+            systemctl --user daemon-reload 2>/dev/null || {
+              echo "⚠️  Could not reload user systemd daemon, trying to start user systemd..."
+              # Start user systemd instance if it is not running
+              sudo systemctl start user@$(id -u).service || true
+              sleep 2
+              systemctl --user daemon-reload || true
+            }
+            
+            echo "Checking web infrastructure service status..."
             WEB_READY=false
-            for i in {1..15}; do  # 15 attempts × 20 seconds = 5 minutes
-              if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
-                echo "✅ Web infrastructure is running (attempt $i)"
-                systemctl --user status web-infra-pod.service --no-pager
-                podman pod ps
-                WEB_READY=true
-                break
-              else
-                echo "Web infrastructure not ready yet (attempt $i/15)..."
-                if [ $i -eq 15 ]; then
-                  echo "⚠️  Web infrastructure did not start within 5 minutes"
+            for i in {1..24}; do  # 24 attempts × 20 seconds = 8 minutes
+              # Check if service exists first
+              if systemctl --user list-unit-files | grep -q "web-infra-pod.service"; then
+                echo "Service file found, checking status..."
+                
+                if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
+                  echo "✅ Web infrastructure is running (attempt $i)"
+                  systemctl --user status web-infra-pod.service --no-pager
+                  
+                  # Verify podman containers are actually running
+                  if podman pod ps --format "{{.Status}}" 2>/dev/null | grep -q "Running"; then
+                    echo "✅ Podman containers are running"
+                    podman pod ps
+                  else
+                    echo "⚠️  Service active but no containers running yet..."
+                  fi
+                  
+                  WEB_READY=true
+                  break
+                elif systemctl --user is-failed web-infra-pod.service >/dev/null 2>&1; then
+                  echo "❌ Web infrastructure service failed (attempt $i)"
                   echo "Service status:"
                   systemctl --user status web-infra-pod.service --no-pager || true
-                  echo "Pod status:"
-                  podman pod ps || true
-                  echo "System journal (last 20 lines):"
-                  journalctl --user -u web-infra-pod.service --no-pager -n 20 || true
+                  echo "Recent logs:"
+                  journalctl --user -u web-infra-pod.service --no-pager -n 10 || true
+                  
+                  # Try to restart the service
+                  if [ $i -le 3 ]; then
+                    echo "Attempting to restart service..."
+                    systemctl --user restart web-infra-pod.service || true
+                  fi
+                else
+                  echo "Web infrastructure not ready yet (attempt $i/24)..."
+                  systemctl --user status web-infra-pod.service --no-pager || true
                 fi
-                sleep 20
+              else
+                echo "⚠️  web-infra-pod.service not found (attempt $i/24)"
+                echo "Available user services:"
+                systemctl --user list-unit-files --type=service | head -10 || true
+                
+                # Check if cloud-init created the service yet
+                if [ -f "$HOME/.config/systemd/user/web-infra-pod.service" ]; then
+                  echo "Service file exists, reloading daemon..."
+                  systemctl --user daemon-reload || true
+                else
+                  echo "Service file not created yet by cloud-init"
+                fi
               fi
+              
+              # Show final status if this is the last attempt
+              if [ $i -eq 24 ]; then
+                echo "⚠️  Web infrastructure did not start within 8 minutes"
+                echo ""
+                echo "=== Diagnostics ==="
+                echo "User systemd status:"
+                systemctl --user status --no-pager || true
+                echo ""
+                echo "Service file location:"
+                ls -la "$HOME/.config/systemd/user/" 2>/dev/null || echo "No user systemd directory"
+                echo ""
+                echo "Podman status:"
+                podman pod ps 2>/dev/null || echo "Podman not working"
+                echo ""
+                echo "System journal (last 20 lines):"
+                journalctl --user -u web-infra-pod.service --no-pager -n 20 2>/dev/null || echo "No service logs"
+                echo ""
+                echo "Cloud-init logs (last 10 lines):"
+                sudo tail -10 /var/log/cloud-init-output.log 2>/dev/null || echo "No cloud-init output log"
+              fi
+              
+              sleep 20
             done
+            
+            if [ "$WEB_READY" = "false" ]; then
+              echo ""
+              echo "🔧 Troubleshooting Steps:"
+              echo "1. Check cloud-init completed: sudo cloud-init status"
+              echo "2. Check user systemd: systemctl --user status"
+              echo "3. Check podman: podman pod ps"
+              echo "4. Check logs: journalctl --user -u web-infra-pod.service"
+              echo "5. Manual start: systemctl --user start web-infra-pod.service"
+            fi
           '
 
       - name: Verify deployment
