@@ -12,6 +12,7 @@ packages:
   - tmux
   - oci-utils
 
+# Keep essential container configs
 write_files:
   - path: /etc/containers/registries.conf
     content: |
@@ -53,103 +54,7 @@ write_files:
     owner: root:root
     permissions: '0644'
 
-  - path: /usr/local/bin/deploy-webserver.sh
-    content: |
-      #!/bin/bash
-      set -e
-      cd /home/opc
-      chown opc:opc /home/opc
-      if [ ! -d "webserver" ]; then
-        sudo -u opc git clone https://github.com/VerilyPete/webserver.git webserver
-      else
-        cd webserver && sudo -u opc git pull && cd ..
-      fi
-      cd webserver
-      chown -R opc:opc /home/opc/webserver
-      sudo -u opc podman pull --quiet k8s.gcr.io/pause:3.9
-      sudo -u opc podman pull --quiet ghcr.io/verilypete/webserver:latest
-      sudo -u opc podman pull --quiet tailscale/tailscale:latest
-      sudo -u opc podman pull --quiet cloudflare/cloudflared:latest
-      
-      # Note: .env file will be created by GitHub Actions workflow
-      # For now, just ensure the webserver directory is ready
-      echo "Webserver directory prepared. .env file will be created by deployment workflow."
-    owner: root:root
-    permissions: '0755'
-
-  - path: /home/opc/.config/systemd/user/webserver-pod.service
-    content: |
-      [Unit]
-      Description=Web Infrastructure Pod
-      Wants=network-online.target
-      After=network-online.target
-      RequiresMountsFor=%t/containers
-      [Service]
-      Type=simple
-      Restart=on-failure
-      TimeoutStopSec=70
-      WorkingDirectory=%h/webserver
-      Environment=PODMAN_SYSTEMD_UNIT=%n
-      ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
-      ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
-      ExecStop=/usr/bin/podman pod stop webserver-pod
-      ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
-      [Install]
-      WantedBy=default.target
-    owner: opc:opc
-    permissions: '0644'
-    defer: true
-
-  - path: /usr/local/bin/start-web-pod.sh
-    content: |
-      #!/bin/bash
-      set -e
-      if [ -f ".env" ]; then
-        set -a && source .env && set +a
-      else
-        echo "ERROR: .env file not found" && exit 1
-      fi
-      
-      # Ensure the pod exists
-      echo "Ensuring webserver-pod exists..."
-      podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
-      
-      # Stop and remove existing containers to avoid conflicts
-      podman stop web-pod web tailscale cloudflared 2>/dev/null || true
-      podman rm web-pod web tailscale cloudflared 2>/dev/null || true
-      
-      # Start containers
-      podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
-      podman run -d --name web --pod webserver-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
-      if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-        podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
-          --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
-          --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
-          tailscale/tailscale:latest
-      fi
-      if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
-        podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
-          --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" cloudflare/cloudflared:latest tunnel --no-autoupdate run
-      fi
-      
-      echo "✅ Web infrastructure started successfully"
-    owner: root:root
-    permissions: '0755'
-
-  - path: /usr/local/bin/system-setup.sh
-    content: |
-      #!/bin/bash
-      set -e
-      systemctl disable --now bluetooth.service cups.service avahi-daemon.service NetworkManager-wait-online.service ModemManager.service wpa_supplicant.service accounts-daemon.service udisks2.service upower.service rtkit-daemon.service packagekit.service dnf-makecache.timer fstrim.timer systemd-tmpfiles-clean.timer || true
-      systemctl mask plymouth-start.service plymouth-read-write.service plymouth-quit-wait.service plymouth-quit.service || true
-      loginctl enable-linger opc
-      if ! grep -q "^opc:" /etc/subuid; then echo "opc:100000:65536" >> /etc/subuid; fi
-      if ! grep -q "^opc:" /etc/subgid; then echo "opc:100000:65536" >> /etc/subgid; fi
-      systemctl start user@$(id -u opc).service
-      sleep 2
-    owner: root:root
-    permissions: '0755'
-
+  # Keep essential system optimizations
   - path: /etc/sysctl.d/99-podman-optimization.conf
     content: |
       vm.swappiness=10
@@ -179,67 +84,11 @@ write_files:
     owner: root:root
     permissions: '0644'
 
-  - path: /usr/local/bin/podman-cleanup.sh
-    content: |
-      #!/bin/bash
-      for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
-        if id "$user" &>/dev/null; then
-          sudo -u "$user" podman container prune -f 2>/dev/null || true
-          sudo -u "$user" podman image prune -af --filter "until=24h" 2>/dev/null || true
-          sudo -u "$user" podman volume prune -f 2>/dev/null || true
-          sudo -u "$user" podman system prune -af 2>/dev/null || true
-        fi
-      done
-      podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
-      buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
-    owner: root:root
-    permissions: '0755'
-
-  - path: /home/opc/.config/containers/containers.conf
-    content: |
-      [containers]
-      log_driver = "journald"
-      pids_limit = 1024
-      [engine]
-      cgroup_manager = "systemd"
-      events_logger = "journald"
-      runtime = "crun"
-      [network]
-      network_backend = "netavark"
-    owner: opc:opc
-    permissions: '0644'
-    defer: true
-
 runcmd:
   - sleep 10
   - dnf update -y --security --skip-broken
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /etc/systemd/journald.conf.d
   - chown -R opc:opc /opt/app /home/opc/.config
-  - |
-    cat > /home/opc/.config/systemd/user/webserver-pod.service << 'EOF'
-    [Unit]
-    Description=Web Infrastructure Pod
-    Wants=network-online.target
-    After=network-online.target
-    RequiresMountsFor=%t/containers
-    [Service]
-    Type=simple
-    Restart=on-failure
-    TimeoutStopSec=70
-    WorkingDirectory=%h/webserver
-    Environment=PODMAN_SYSTEMD_UNIT=%n
-    ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
-    ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
-    ExecStop=/usr/bin/podman pod stop webserver-pod
-    ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
-    [Install]
-    WantedBy=default.target
-    EOF
-  - chown opc:opc /home/opc/.config/systemd/user/webserver-pod.service
-  - |
-    for script in /usr/local/bin/*.sh; do
-      if [ -f "$script" ]; then chmod +x "$script"; fi
-    done
   - |
     if [ -x /usr/local/bin/system-setup.sh ]; then
       /usr/local/bin/system-setup.sh
@@ -253,23 +102,9 @@ runcmd:
   - firewall-cmd --permanent --remove-service=dhcpv6-client || true
   - firewall-cmd --permanent --add-port=8081/tcp
   - firewall-cmd --reload
-  - (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
-  - |
-    if [ -x /usr/local/bin/deploy-webserver.sh ]; then
-      /usr/local/bin/deploy-webserver.sh
-    fi
-  - |
-    export XDG_RUNTIME_DIR="/run/user/$(id -u opc)"
-    sudo -u opc systemctl --user daemon-reload
-  - |
-    if [ -f /home/opc/.config/systemd/user/webserver-pod.service ]; then
-      export XDG_RUNTIME_DIR="/run/user/$(id -u opc)"
-      sudo -u opc systemctl --user enable webserver-pod.service
-    fi
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
   - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron
   - dnf update -y oci-utils
 
 final_message: |
-  Web infrastructure deployed! Access at http://[instance-ip]:8081
-  Manual start: sudo -u opc systemctl --user start webserver-pod
+  Basic system setup complete! GitHub Actions will handle the rest.
