@@ -190,12 +190,13 @@ jobs:
             
             echo "Creating .env file..."
             cat > .env << 'ENV_EOF'
-TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
-APP_PORT=8081
-APP_ENV=production
-ENV_EOF
+            HOSTNAME=${{ steps.hostname.outputs.hostname }}
+            TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+            CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+            FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+            APP_PORT=8081
+            APP_ENV=production
+            ENV_EOF
             
             chmod 600 .env
             
@@ -344,13 +345,13 @@ ENV_EOF
           
           # Create .env file directly
           cat > .env << 'ENV_EOF'
-TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
-HOSTNAME=${{ steps.hostname.outputs.hostname }}
-APP_PORT=8081
-APP_ENV=production
-ENV_EOF
+          HOSTNAME=${{ steps.hostname.outputs.hostname }}
+          TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+          APP_PORT=8081
+          APP_ENV=production
+          ENV_EOF
           
           chmod 600 .env
           
