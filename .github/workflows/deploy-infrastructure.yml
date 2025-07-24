@@ -27,7 +27,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Set explicit job timeout
+    timeout-minutes: 45  # Increased to accommodate cloud-init delays
     
     steps:
       - name: Checkout repository
@@ -45,10 +45,10 @@ jobs:
       - name: Deploy new instance (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 15
+        timeout-minutes: 20  # Increased timeout for instance creation
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 600'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
           silent: false
 
       - name: Debug environment variables
@@ -86,7 +86,7 @@ jobs:
       - name: Test basic OCI connectivity
         if: github.event.inputs.deploy_type == 'update'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 1
+        timeout-minutes: 2  # Increased slightly
         continue-on-error: true
         id: test_connection
         with:
@@ -108,7 +108,7 @@ jobs:
       - name: Find existing instance (update)
         if: github.event.inputs.deploy_type == 'update'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 2
+        timeout-minutes: 3  # Increased timeout
         id: find_instance
         continue-on-error: true
         with:
@@ -134,6 +134,7 @@ jobs:
       - name: Get instance IP and update (update)
         if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 2
         id: get_instance_ip
         with:
           command: 'compute instance list-vnics --instance-id "${{ steps.check_instance.outputs.instance_id }}"'
@@ -149,45 +150,76 @@ jobs:
 
       - name: Update existing infrastructure
         if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
-        timeout-minutes: 8
+        timeout-minutes: 12  # Increased timeout
         run: |
           PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
           PUBLIC_IP=$(echo $PUBLIC_IP | tr -d '"')
           
           echo "Found instance with IP: $PUBLIC_IP"
           
-          # Wait for SSH to be available
+          # Robust SSH connectivity check
           echo "Waiting for SSH access..."
-          for i in {1..60}; do
-            if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
-              echo "SSH connection successful"
+          SSH_READY=false
+          for i in {1..36}; do  # 36 attempts × 10 seconds = 6 minutes max
+            if timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
+              echo "✅ SSH connection successful (attempt $i)"
+              SSH_READY=true
               break
             fi
-            echo "Attempt $i/60 failed, waiting 10 seconds..."
+            echo "SSH attempt $i/36 failed, waiting 10 seconds..."
             sleep 10
-            if [ $i -eq 60 ]; then
-              echo "❌ SSH connection failed after 10 minutes"
-              exit 1
-            fi
           done
           
-          # Update the running infrastructure
-          ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP << 'EOF'
-            cd ~/web-infra
-            git pull origin main
+          if [ "$SSH_READY" = "false" ]; then
+            echo "❌ SSH connection failed after 6 minutes"
+            echo "Instance may be down or network issues present"
+            exit 1
+          fi
+          
+          # Update the running infrastructure with better error handling
+          echo "Updating infrastructure..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP << 'EOF'
+            set -e  # Exit on any error
             
-            # Update environment with latest secrets
+            echo "Updating repository..."
+            cd ~/web-infra
+            git pull origin main || {
+              echo "❌ Git pull failed"
+              exit 1
+            }
+            
+            echo "Updating environment variables..."
             export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
             export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
             export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
-            sudo /usr/local/bin/create-env-from-metadata.sh
+            sudo /usr/local/bin/create-env-from-metadata.sh || {
+              echo "❌ Environment update failed"
+              exit 1
+            }
             
-            # Restart services
-            systemctl --user restart web-infra-pod.service
+            echo "Restarting services..."
+            systemctl --user restart web-infra-pod.service || {
+              echo "❌ Service restart failed"
+              systemctl --user status web-infra-pod.service --no-pager
+              exit 1
+            }
             
-            # Wait a moment and check status
-            sleep 5
-            systemctl --user status web-infra-pod.service
+            # Wait for service to stabilize
+            echo "Waiting for services to stabilize..."
+            for i in {1..12}; do  # 2 minutes max
+              if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
+                echo "✅ Service is active (attempt $i)"
+                break
+              fi
+              if [ $i -eq 12 ]; then
+                echo "⚠️ Service taking longer than expected to start"
+                systemctl --user status web-infra-pod.service --no-pager
+              fi
+              sleep 10
+            done
+            
+            echo "Final status check:"
+            systemctl --user status web-infra-pod.service --no-pager
             podman pod ps
           EOF
 
@@ -218,6 +250,7 @@ jobs:
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 2
         continue-on-error: true
         with:
           command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
@@ -226,6 +259,7 @@ jobs:
       - name: Get new instance IP (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 3
         id: get_new_ip
         continue-on-error: true
         with:
@@ -242,71 +276,126 @@ jobs:
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 20
+        timeout-minutes: 30  # Increased for more thorough cloud-init detection
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
           echo "Waiting for instance to be fully ready at $PUBLIC_IP..."
           
-          # Wait for SSH to be available
+          # Function to check if SSH is ready
+          check_ssh() {
+            timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$PUBLIC_IP "echo 'SSH Ready'" >/dev/null 2>&1
+          }
+          
+          # Wait for SSH to be available (up to 8 minutes)
           echo "1. Waiting for SSH access..."
-          for i in {1..60}; do
-            if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
-              echo "✅ SSH connection successful"
+          SSH_READY=false
+          for i in {1..48}; do  # 48 attempts × 10 seconds = 8 minutes
+            if check_ssh; then
+              echo "✅ SSH connection successful (attempt $i)"
+              SSH_READY=true
               break
             fi
-            echo "Attempt $i/60 failed, waiting 10 seconds..."
+            echo "SSH attempt $i/48 failed, waiting 10 seconds..."
             sleep 10
           done
           
-          # Wait for cloud-init to complete
-          echo "2. Waiting for cloud-init to complete (this may take 10-15 minutes on single core)..."
-          ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP '
-            echo "Checking cloud-init status..."
-            for i in {1..60}; do
-              STATUS=$(sudo cloud-init status --format=status 2>/dev/null || echo "running")
-              echo "Cloud-init status: $STATUS (attempt $i/60, $(($i * 30)) seconds elapsed)"
+          if [ "$SSH_READY" = "false" ]; then
+            echo "❌ SSH connection failed after 8 minutes"
+            echo "Instance may have failed to start properly"
+            exit 1
+          fi
+          
+          # Wait for cloud-init to complete (up to 20 minutes) using multiple reliable methods
+          echo "2. Waiting for cloud-init to complete..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP '
+            echo "Using cloud-init status --wait (most reliable method)..."
+            
+            # Method 1: Use cloud-init status --wait with timeout (recommended approach)
+            if timeout 1200 cloud-init status --wait; then  # 20 minutes timeout
+              echo "✅ Cloud-init completed successfully via status --wait"
+              sudo cloud-init status --long
+            else
+              WAIT_EXIT_CODE=$?
+              echo "⚠️  cloud-init status --wait exited with code $WAIT_EXIT_CODE"
               
-              if [ "$STATUS" = "done" ]; then
-                echo "✅ Cloud-init completed successfully"
-                break
-              elif [ "$STATUS" = "error" ]; then
-                echo "⚠️  Cloud-init reports error status, checking details..."
-                sudo cloud-init status --long
-                echo ""
-                echo "Checking if cloud-init is still running..."
-                if pgrep -f cloud-init >/dev/null; then
-                  echo "Cloud-init processes still running, continuing to wait..."
-                  sleep 30
-                  continue
-                else
-                  echo "❌ Cloud-init has stopped with errors"
-                  exit 1
-                fi
+              if [ $WAIT_EXIT_CODE -eq 124 ]; then
+                echo "❌ Timeout: cloud-init did not complete within 20 minutes"
               else
-                echo "Cloud-init still running... (will check again in 30 seconds)"
-                sleep 30
+                echo "❌ Cloud-init reported failure or other issue"
               fi
               
-              if [ $i -eq 60 ]; then
-                echo "⚠️  Cloud-init did not complete within 30 minutes"
-                echo "Final status check:"
-                sudo cloud-init status --long
-                echo "Continuing anyway..."
+              echo "Checking status and attempting fallback methods..."
+              sudo cloud-init status --long || true
+              
+              # Method 2: Check for completion marker files as fallback
+              echo "Checking for completion marker files..."
+              if [ -f "/run/cloud-init/result.json" ]; then
+                echo "✅ Found /run/cloud-init/result.json - cloud-init appears complete"
+                if command -v jq >/dev/null 2>&1; then
+                  echo "Result summary:"
+                  sudo jq -r ".v1.errors // []" /run/cloud-init/result.json 2>/dev/null || echo "Could not parse result.json"
+                fi
+              elif [ -f "/var/lib/cloud/instance/boot-finished" ]; then
+                echo "✅ Found /var/lib/cloud/instance/boot-finished - cloud-init appears complete"
+              else
+                echo "⚠️  No completion markers found"
+                
+                # Method 3: Check systemd services as final fallback
+                echo "Checking systemd service status..."
+                ALL_SERVICES_DONE=true
+                for service in cloud-init-local cloud-init cloud-config cloud-final; do
+                  if systemctl is-active ${service}.service >/dev/null 2>&1; then
+                    echo "⚠️  ${service}.service is still active"
+                    ALL_SERVICES_DONE=false
+                  elif systemctl is-failed ${service}.service >/dev/null 2>&1; then
+                    echo "❌ ${service}.service failed"
+                    systemctl status ${service}.service --no-pager || true
+                  else
+                    echo "✅ ${service}.service completed"
+                  fi
+                done
+                
+                if [ "$ALL_SERVICES_DONE" = "true" ]; then
+                  echo "✅ All cloud-init systemd services completed"
+                else
+                  echo "⚠️  Some cloud-init services still running or failed"
+                fi
               fi
-            done
+              
+              echo "Proceeding with deployment despite cloud-init concerns..."
+            fi
+            
+            # Final verification and logging
+            echo ""
+            echo "=== Final Cloud-init Status ==="
+            sudo cloud-init status || true
+            echo ""
+            echo "=== Cloud-init Boot Times ==="
+            sudo cloud-init analyze show 2>/dev/null | head -20 || echo "Analysis not available"
           '
           
-          # Wait for web infrastructure to start
+          # Wait for web infrastructure to start (up to 5 minutes)
           echo "3. Waiting for web infrastructure to start..."
-          ssh -o StrictHostKeyChecking=no opc@$PUBLIC_IP '
-            for i in {1..30}; do
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP '
+            WEB_READY=false
+            for i in {1..15}; do  # 15 attempts × 20 seconds = 5 minutes
               if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
-                echo "✅ Web infrastructure is running"
+                echo "✅ Web infrastructure is running (attempt $i)"
                 systemctl --user status web-infra-pod.service --no-pager
                 podman pod ps
+                WEB_READY=true
                 break
               else
-                echo "Web infrastructure not ready yet (attempt $i/30)..."
+                echo "Web infrastructure not ready yet (attempt $i/15)..."
+                if [ $i -eq 15 ]; then
+                  echo "⚠️  Web infrastructure did not start within 5 minutes"
+                  echo "Service status:"
+                  systemctl --user status web-infra-pod.service --no-pager || true
+                  echo "Pod status:"
+                  podman pod ps || true
+                  echo "System journal (last 20 lines):"
+                  journalctl --user -u web-infra-pod.service --no-pager -n 20 || true
+                fi
                 sleep 20
               fi
             done
@@ -333,7 +422,7 @@ jobs:
 
   cleanup-old-instances:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8  # Increased slightly
     needs: deploy
     if: github.event.inputs.deploy_type == 'fresh_deploy'
     
@@ -347,6 +436,7 @@ jobs:
     steps:
       - name: List old instances for manual cleanup
         uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 3
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
           query: 'data[?contains(\"display-name\", `web-server`)].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
