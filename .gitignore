@@ -20,3 +20,4 @@ logs/
 .container-*
 
 # Note: .env is now safe to commit (contains only placeholders)
+CLOUD_INIT_FIX.md
