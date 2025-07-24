@@ -669,6 +669,7 @@ jobs:
           sleep 2
           systemctl --user daemon-reload
           systemctl --user enable webserver-pod.service
+          systemctl --user start webserver-pod.service
           
           echo "✅ Container infrastructure setup complete"
           CONTAINER_SETUP_EOF
