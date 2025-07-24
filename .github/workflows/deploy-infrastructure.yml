@@ -257,9 +257,18 @@ jobs:
               podman stop web-pod web tailscale cloudflared 2>/dev/null || true
               podman rm web-pod web tailscale cloudflared 2>/dev/null || true
               
-              # Start containers
-              podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
-              podman run -d --name web --pod webserver-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
+          # Create nginx configuration with proper Formspree endpoint
+          echo "Creating nginx configuration with Formspree endpoint..."
+          podman run --rm --name nginx-config-helper \
+            --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
+            ghcr.io/verilypete/webserver:latest \
+            sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
+          
+          # Start containers
+          podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
+          podman run -d --name web --pod webserver-pod --restart unless-stopped \
+            --mount type=bind,source=/tmp/nginx-fixed.conf,target=/etc/nginx/nginx.conf,ro \
+            ghcr.io/verilypete/webserver:latest
               if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
                 podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
                   --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
@@ -612,9 +621,18 @@ jobs:
           podman stop web-pod web tailscale cloudflared 2>/dev/null || true
           podman rm web-pod web tailscale cloudflared 2>/dev/null || true
           
+          # Create nginx configuration with proper Formspree endpoint
+          echo "Creating nginx configuration with Formspree endpoint..."
+          podman run --rm --name nginx-config-helper \
+            --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
+            ghcr.io/verilypete/webserver:latest \
+            sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
+          
           # Start containers
           podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
-          podman run -d --name web --pod webserver-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
+          podman run -d --name web --pod webserver-pod --restart unless-stopped \
+            --mount type=bind,source=/tmp/nginx-fixed.conf,target=/etc/nginx/nginx.conf,ro \
+            ghcr.io/verilypete/webserver:latest
           if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
             podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
               --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
