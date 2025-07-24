@@ -35,13 +35,19 @@ jobs:
           
           echo "🚀 Starting production deployment..."
           
-          # Export secrets from GitHub Actions
-          export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
-          export HOSTNAME="${{ secrets.HOSTNAME }}"
-          export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
-          export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
-          export GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          export SERVER_HOST="${{ secrets.SERVER_HOST }}"
+          # Create .env file directly
+          cat > .env << 'ENV_EOF'
+TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+HOSTNAME=${{ secrets.HOSTNAME }}
+CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+GHCR_TOKEN=${{ secrets.GITHUB_TOKEN }}
+SERVER_HOST=${{ secrets.SERVER_HOST }}
+APP_PORT=8081
+APP_ENV=production
+ENV_EOF
+          
+          chmod 600 .env
          
           # Deploy script
           ./scripts/deploy.sh

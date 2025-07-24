@@ -53,32 +53,6 @@ write_files:
     owner: root:root
     permissions: '0644'
 
-  - path: /usr/local/bin/create-env-from-metadata.sh
-    content: |
-      #!/bin/bash
-      set -e
-      INSTANCE_ID=$(curl -s http://169.254.169.254/opc/v1/instance/id 2>/dev/null || echo "unknown")
-      REGION=$(curl -s http://169.254.169.254/opc/v1/instance/region 2>/dev/null || echo "unknown")
-      DEFAULT_HOSTNAME="web-server-${INSTANCE_ID:0:8}"
-      TAILSCALE_KEY="${TAILSCALE_AUTH_KEY:-}"
-      CLOUDFLARE_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
-      FORMSPREE_ENDPOINT="${FORMSPREE_ENDPOINT:-}"
-      HOSTNAME_VAR="${HOSTNAME:-$DEFAULT_HOSTNAME}"
-      cat > /home/opc/webserver/.env << EOF
-      TAILSCALE_AUTH_KEY=$TAILSCALE_KEY
-      HOSTNAME=$HOSTNAME_VAR
-      CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TOKEN
-      FORMSPREE_ENDPOINT=$FORMSPREE_ENDPOINT
-      APP_PORT=8081
-      APP_ENV=production
-      OCI_INSTANCE_ID=$INSTANCE_ID
-      OCI_REGION=$REGION
-      EOF
-      chown opc:opc /home/opc/webserver/.env
-      chmod 600 /home/opc/webserver/.env
-    owner: root:root
-    permissions: '0755'
-
   - path: /usr/local/bin/deploy-webserver.sh
     content: |
       #!/bin/bash
@@ -92,17 +66,14 @@ write_files:
       fi
       cd webserver
       chown -R opc:opc /home/opc/webserver
-      /usr/local/bin/create-env-from-metadata.sh
       sudo -u opc podman pull --quiet k8s.gcr.io/pause:3.9
       sudo -u opc podman pull --quiet ghcr.io/verilypete/webserver:latest
       sudo -u opc podman pull --quiet tailscale/tailscale:latest
       sudo -u opc podman pull --quiet cloudflare/cloudflared:latest
-      if [ -f ".env" ]; then
-        source .env
-        if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [[ "$TAILSCALE_AUTH_KEY" == tskey-* ]]; then
-          (sleep 15 && export XDG_RUNTIME_DIR="/run/user/$(id -u opc)" && sudo -u opc systemctl --user start webserver-pod.service) &
-        fi
-      fi
+      
+      # Note: .env file will be created by GitHub Actions workflow
+      # For now, just ensure the webserver directory is ready
+      echo "Webserver directory prepared. .env file will be created by deployment workflow."
     owner: root:root
     permissions: '0755'
 

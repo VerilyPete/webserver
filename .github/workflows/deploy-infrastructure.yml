@@ -48,7 +48,7 @@ jobs:
         timeout-minutes: 20  # Increased timeout for instance creation
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\",\"CLOUDFLARE_TUNNEL_TOKEN\":\"${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}\",\"FORMSPREE_ENDPOINT\":\"${{ secrets.FORMSPREE_ENDPOINT }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_IMAGE_ID }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
           silent: false
 
       - name: Debug environment variables
@@ -188,16 +188,16 @@ jobs:
               exit 1
             }
             
-            echo "Updating environment variables..."
-            export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
-            export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
-            export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
+            echo "Creating .env file..."
+            cat > .env << 'ENV_EOF'
+TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+APP_PORT=8081
+APP_ENV=production
+ENV_EOF
             
-            # Create .env file with current environment variables
-            sudo /usr/local/bin/create-env-from-metadata.sh || {
-              echo "❌ Environment update failed"
-              exit 1
-            }
+            chmod 600 .env
             
             echo "Running deploy.sh script..."
             ./scripts/deploy.sh || {
@@ -340,19 +340,21 @@ jobs:
           set -e
           
           echo "Setting up environment variables..."
-          export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
-          export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
-          export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
-          export HOSTNAME="${{ steps.hostname.outputs.hostname }}"
+          cd ~/webserver
           
-          # Create .env file with current environment variables
-          sudo /usr/local/bin/create-env-from-metadata.sh || {
-            echo "❌ Environment setup failed"
-            exit 1
-          }
+          # Create .env file directly
+          cat > .env << 'ENV_EOF'
+TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+HOSTNAME=${{ steps.hostname.outputs.hostname }}
+APP_PORT=8081
+APP_ENV=production
+ENV_EOF
+          
+          chmod 600 .env
           
           echo "Running deploy.sh script..."
-          cd ~/webserver
           ./scripts/deploy.sh || {
             echo "❌ Deploy script failed"
             exit 1
