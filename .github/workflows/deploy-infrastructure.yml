@@ -270,6 +270,8 @@ jobs:
             --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
             ghcr.io/verilypete/webserver:latest \
             sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
+            chmod 644 /tmp/nginx-fixed.conf
+            sudo chown 0:0 /tmp/nginx-fixed.conf
           
           # Start containers
           podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
@@ -637,6 +639,8 @@ jobs:
             --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
             ghcr.io/verilypete/webserver:latest \
             sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
+            chmod 644 /tmp/nginx-fixed.conf
+            sudo chown 0:0 /tmp/nginx-fixed.conf
           
           # Start containers
           podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
