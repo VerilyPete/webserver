@@ -257,6 +257,13 @@ jobs:
               podman stop web-pod web tailscale cloudflared 2>/dev/null || true
               podman rm web-pod web tailscale cloudflared 2>/dev/null || true
               
+              # Pull latest web server image
+              echo "Pulling latest web server image..."
+              podman pull ghcr.io/verilypete/webserver:latest || {
+                echo "❌ Failed to pull web server image"
+                exit 1
+              }
+              
           # Create nginx configuration with proper Formspree endpoint
           echo "Creating nginx configuration with Formspree endpoint..."
           podman run --rm --name nginx-config-helper \
@@ -313,11 +320,7 @@ jobs:
             
             chmod 600 .env
             
-            echo "Running deploy.sh script..."
-            ./scripts/deploy.sh || {
-              echo "❌ Deploy script failed"
-              exit 1
-            }
+            echo "✅ Infrastructure update completed successfully"
             
             echo "✅ Infrastructure update completed successfully"
           EOF
@@ -621,6 +624,13 @@ jobs:
           podman stop web-pod web tailscale cloudflared 2>/dev/null || true
           podman rm web-pod web tailscale cloudflared 2>/dev/null || true
           
+          # Pull latest web server image
+          echo "Pulling latest web server image..."
+          podman pull ghcr.io/verilypete/webserver:latest || {
+            echo "❌ Failed to pull web server image"
+            exit 1
+          }
+          
           # Create nginx configuration with proper Formspree endpoint
           echo "Creating nginx configuration with Formspree endpoint..."
           podman run --rm --name nginx-config-helper \
@@ -679,11 +689,7 @@ jobs:
           
           chmod 600 .env
           
-          echo "Running deploy.sh script..."
-          ./scripts/deploy.sh || {
-            echo "❌ Deploy script failed"
-            exit 1
-          }
+                      echo "✅ Web infrastructure deployed successfully!"
           
           echo "✅ Web infrastructure deployed successfully!"
           WEB_INFRA_EOF
