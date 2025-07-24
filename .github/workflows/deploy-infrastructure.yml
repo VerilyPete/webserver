@@ -298,7 +298,7 @@ jobs:
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 30  # Increased for more thorough cloud-init detection
+        timeout-minutes: 35  # Increased for 30-minute cloud-init timeout plus buffer
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
           echo "Waiting for instance to be fully ready at $PUBLIC_IP..."
@@ -333,7 +333,7 @@ jobs:
             echo "Using cloud-init status --wait (most reliable method)..."
             
             # Method 1: Use cloud-init status --wait with timeout (recommended approach)
-            if timeout 1200 cloud-init status --wait; then  # 20 minutes timeout
+            if timeout 1800 cloud-init status --wait; then  # 30 minutes timeout
               echo "✅ Cloud-init completed successfully via status --wait"
               sudo cloud-init status --long
             else
@@ -341,9 +341,9 @@ jobs:
               echo "⚠️  cloud-init status --wait exited with code $WAIT_EXIT_CODE"
               
               if [ $WAIT_EXIT_CODE -eq 124 ]; then
-                echo "❌ Timeout: cloud-init did not complete within 20 minutes"
+                echo "❌ Timeout: cloud-init did not complete within 30 minutes"
               else
-                echo "❌ Cloud-init reported failure or other issue"
+                echo "⚠️  Cloud-init may have completed with errors"
               fi
               
               echo "Checking status and attempting fallback methods..."
@@ -391,6 +391,18 @@ jobs:
             echo ""
             echo "=== Final Cloud-init Status ==="
             sudo cloud-init status || true
+            echo ""
+            echo "=== Cloud-init Errors Summary ==="
+            if sudo cloud-init status --long | grep -q "errors:"; then
+              echo "⚠️  Cloud-init completed with errors:"
+              sudo cloud-init status --long | sed -n '/errors:/,/recoverable_errors:/p' | head -20
+              echo ""
+              echo "💡 Common fix: If write_files errors about user 'opc' not found,"
+              echo "   add 'defer: true' to write_files entries that set owner: opc"
+              echo "   This delays file creation until after users are created."
+            else
+              echo "✅ No cloud-init errors reported"
+            fi
             echo ""
             echo "=== Cloud-init Boot Times ==="
             sudo cloud-init analyze show 2>/dev/null | head -20 || echo "Analysis not available"

@@ -5,8 +5,8 @@ bootcmd:
   - dnf remove -y --skip-broken kernel-tools perf tuned kexec-tools libreport-* man man-pages info strace ltrace || true
   - dnf clean all
 
-package_update: true
-package_upgrade: true
+package_update: false
+package_upgrade: false
 
 packages:
   - podman
@@ -133,6 +133,7 @@ write_files:
       WantedBy=default.target
     owner: opc:opc
     permissions: '0644'
+    defer: true
 
   - path: /usr/local/bin/start-web-pod.sh
     content: |
@@ -230,9 +231,11 @@ write_files:
       network_backend = "netavark"
     owner: opc:opc
     permissions: '0644'
+    defer: true
 
 runcmd:
   - sleep 10
+  - dnf update -y --security --skip-broken
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /etc/systemd/journald.conf.d
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
