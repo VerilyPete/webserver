@@ -176,8 +176,8 @@ jobs:
             exit 1
           fi
           
-          # Update the running infrastructure with better error handling
-          echo "Updating infrastructure..."
+          # Update the running infrastructure using deploy.sh script
+          echo "Updating infrastructure using deploy.sh script..."
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP << 'EOF'
             set -e  # Exit on any error
             
@@ -192,57 +192,20 @@ jobs:
             export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
             export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
             export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
+            
+            # Create .env file with current environment variables
             sudo /usr/local/bin/create-env-from-metadata.sh || {
               echo "❌ Environment update failed"
               exit 1
             }
             
-            echo "Ensuring user systemd prerequisites..."
-            # Ensure lingering is enabled for automatic startup
-            if ! loginctl show-user opc | grep -q "Linger=yes"; then
-              echo "Enabling user lingering..."
-              sudo loginctl enable-linger opc
-            fi
-            
-            # Ensure XDG_RUNTIME_DIR is set
-            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-            
-            # Reload systemd user daemon
-            systemctl --user daemon-reload || {
-              echo "⚠️  Could not reload user systemd daemon"
-              # Try to start user systemd instance
-              sudo systemctl start user@$(id -u).service || true
-              sleep 2
-              systemctl --user daemon-reload || true
-            }
-            
-            echo "Restarting services..."
-            systemctl --user restart webserver-pod.service || {
-              echo "❌ Service restart failed"
-              echo "Checking service status:"
-              systemctl --user status webserver-pod.service --no-pager || true
-              echo "Checking if service file exists:"
-              ls -la ~/.config/systemd/user/ || true
+            echo "Running deploy.sh script..."
+            ./scripts/deploy.sh || {
+              echo "❌ Deploy script failed"
               exit 1
             }
             
-            # Wait for service to stabilize
-            echo "Waiting for services to stabilize..."
-            for i in {1..12}; do  # 2 minutes max
-              if systemctl --user is-active webserver-pod.service >/dev/null 2>&1; then
-                echo "✅ Service is active (attempt $i)"
-                break
-              fi
-              if [ $i -eq 12 ]; then
-                echo "⚠️ Service taking longer than expected to start"
-                systemctl --user status webserver-pod.service --no-pager
-              fi
-              sleep 10
-            done
-            
-            echo "Final status check:"
-            systemctl --user status webserver-pod.service --no-pager
-            podman pod ps
+            echo "✅ Infrastructure update completed successfully"
           EOF
 
       - name: Handle no existing instance
@@ -298,7 +261,7 @@ jobs:
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 25  # Reduced from 35
+        timeout-minutes: 20  # Reduced since we're using deploy.sh script
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
           echo "Waiting for instance to be fully ready at $PUBLIC_IP..."
@@ -371,79 +334,31 @@ jobs:
           fi
           CLOUD_INIT_EOF
           
-          # Step 3: Wait for web infrastructure (max 8 minutes)
-          echo "Step 3: Waiting for web infrastructure..."
+          # Step 3: Deploy web infrastructure using deploy.sh script
+          echo "Step 3: Deploying web infrastructure using deploy.sh script..."
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'WEB_INFRA_EOF'
           set -e
           
-          # Setup user systemd environment
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          echo "Setting up environment variables..."
+          export TAILSCALE_AUTH_KEY="${{ secrets.TAILSCALE_AUTH_KEY }}"
+          export CLOUDFLARE_TUNNEL_TOKEN="${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}"
+          export FORMSPREE_ENDPOINT="${{ secrets.FORMSPREE_ENDPOINT }}"
+          export HOSTNAME="${{ steps.hostname.outputs.hostname }}"
           
-          # Enable lingering if not already enabled
-          if ! loginctl show-user opc 2>/dev/null | grep -q "Linger=yes"; then
-            echo "Enabling user lingering..."
-            sudo loginctl enable-linger opc
-            sleep 2
-          fi
-          
-          # Reload systemd user daemon
-          systemctl --user daemon-reload 2>/dev/null || {
-            echo "Starting user systemd instance..."
-            sudo systemctl start user@$(id -u).service
-            sleep 3
-            systemctl --user daemon-reload
+          # Create .env file with current environment variables
+          sudo /usr/local/bin/create-env-from-metadata.sh || {
+            echo "❌ Environment setup failed"
+            exit 1
           }
           
-          # Wait for service to be ready
-          echo "Waiting for webserver-pod service..."
-          WEB_ATTEMPTS=24  # 24 * 20 seconds = 8 minutes
+          echo "Running deploy.sh script..."
+          cd ~/webserver
+          ./scripts/deploy.sh || {
+            echo "❌ Deploy script failed"
+            exit 1
+          }
           
-          for i in $(seq 1 $WEB_ATTEMPTS); do
-            if systemctl --user is-active webserver-pod.service >/dev/null 2>&1; then
-              echo "✅ Web infrastructure is running (attempt $i/$WEB_ATTEMPTS)"
-              systemctl --user status webserver-pod.service --no-pager
-              
-              # Quick container check
-              if podman pod ps --format "{{.Status}}" 2>/dev/null | grep -q "Running"; then
-                echo "✅ Podman containers confirmed running"
-                podman pod ps
-                break
-              else
-                echo "⚠️ Service active but containers not ready, waiting..."
-              fi
-              
-            elif systemctl --user is-failed webserver-pod.service >/dev/null 2>&1; then
-              echo "❌ Web infrastructure service failed (attempt $i/$WEB_ATTEMPTS)"
-              systemctl --user status webserver-pod.service --no-pager
-              
-              # Only retry in first few attempts
-              if [ $i -le 3 ]; then
-                echo "Restarting failed service..."
-                systemctl --user restart webserver-pod.service
-              else
-                echo "Service consistently failing, giving up"
-                exit 1
-              fi
-              
-            else
-              echo "Web service not ready yet (attempt $i/$WEB_ATTEMPTS)..."
-              if [ $((i % 6)) -eq 0 ]; then  # Every 2 minutes, show status
-                systemctl --user status webserver-pod.service --no-pager || echo "Service not found yet"
-              fi
-            fi
-            
-            if [ $i -eq $WEB_ATTEMPTS ]; then
-              echo "❌ Web infrastructure failed to start within 8 minutes"
-              echo "Final diagnostics:"
-              systemctl --user status webserver-pod.service --no-pager || true
-              podman pod ps 2>/dev/null || true
-              exit 1
-            fi
-            
-            sleep 20
-          done
-          
-          echo "✅ Web infrastructure is ready!"
+          echo "✅ Web infrastructure deployed successfully!"
           WEB_INFRA_EOF
 
       - name: Verify deployment
@@ -463,7 +378,7 @@ jobs:
           echo ""
           echo "🔍 Check your Tailscale admin console for the device"
           echo "🌐 Web server will be accessible at http://[tailscale-ip]:8081"
-          echo "📊 Monitor with: ssh opc@[instance-ip] 'podman pod ps'"
+          echo "📊 Monitor with: ssh opc@[instance-ip] 'podman pod ps && podman ps'"
 
   cleanup-old-instances:
     runs-on: ubuntu-latest

@@ -114,7 +114,7 @@ write_files:
       After=network-online.target
       RequiresMountsFor=%t/containers
       [Service]
-      Type=forking
+      Type=simple
       Restart=on-failure
       TimeoutStopSec=70
       WorkingDirectory=%h/webserver
@@ -138,6 +138,16 @@ write_files:
       else
         echo "ERROR: .env file not found" && exit 1
       fi
+      
+      # Ensure the pod exists
+      echo "Ensuring webserver-pod exists..."
+      podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
+      
+      # Stop and remove existing containers to avoid conflicts
+      podman stop web-pod web tailscale cloudflared 2>/dev/null || true
+      podman rm web-pod web tailscale cloudflared 2>/dev/null || true
+      
+      # Start containers
       podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
       podman run -d --name web --pod webserver-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
       if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
@@ -150,6 +160,8 @@ write_files:
         podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
           --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" cloudflare/cloudflared:latest tunnel --no-autoupdate run
       fi
+      
+      echo "✅ Web infrastructure started successfully"
     owner: root:root
     permissions: '0755'
 
@@ -240,7 +252,7 @@ runcmd:
     After=network-online.target
     RequiresMountsFor=%t/containers
     [Service]
-    Type=forking
+    Type=simple
     Restart=on-failure
     TimeoutStopSec=70
     WorkingDirectory=%h/webserver
