@@ -182,7 +182,7 @@ jobs:
             set -e  # Exit on any error
             
             echo "Updating repository..."
-            cd ~/web-infra
+            cd ~/webserver
             git pull origin main || {
               echo "❌ Git pull failed"
               exit 1
@@ -217,10 +217,10 @@ jobs:
             }
             
             echo "Restarting services..."
-            systemctl --user restart web-infra-pod.service || {
+            systemctl --user restart webserver-pod.service || {
               echo "❌ Service restart failed"
               echo "Checking service status:"
-              systemctl --user status web-infra-pod.service --no-pager || true
+              systemctl --user status webserver-pod.service --no-pager || true
               echo "Checking if service file exists:"
               ls -la ~/.config/systemd/user/ || true
               exit 1
@@ -229,19 +229,19 @@ jobs:
             # Wait for service to stabilize
             echo "Waiting for services to stabilize..."
             for i in {1..12}; do  # 2 minutes max
-              if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
+              if systemctl --user is-active webserver-pod.service >/dev/null 2>&1; then
                 echo "✅ Service is active (attempt $i)"
                 break
               fi
               if [ $i -eq 12 ]; then
                 echo "⚠️ Service taking longer than expected to start"
-                systemctl --user status web-infra-pod.service --no-pager
+                systemctl --user status webserver-pod.service --no-pager
               fi
               sleep 10
             done
             
             echo "Final status check:"
-            systemctl --user status web-infra-pod.service --no-pager
+            systemctl --user status webserver-pod.service --no-pager
             podman pod ps
           EOF
 
@@ -395,13 +395,13 @@ jobs:
           }
           
           # Wait for service to be ready
-          echo "Waiting for web-infra-pod service..."
+          echo "Waiting for webserver-pod service..."
           WEB_ATTEMPTS=24  # 24 * 20 seconds = 8 minutes
           
           for i in $(seq 1 $WEB_ATTEMPTS); do
-            if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
+            if systemctl --user is-active webserver-pod.service >/dev/null 2>&1; then
               echo "✅ Web infrastructure is running (attempt $i/$WEB_ATTEMPTS)"
-              systemctl --user status web-infra-pod.service --no-pager
+              systemctl --user status webserver-pod.service --no-pager
               
               # Quick container check
               if podman pod ps --format "{{.Status}}" 2>/dev/null | grep -q "Running"; then
@@ -412,14 +412,14 @@ jobs:
                 echo "⚠️ Service active but containers not ready, waiting..."
               fi
               
-            elif systemctl --user is-failed web-infra-pod.service >/dev/null 2>&1; then
+            elif systemctl --user is-failed webserver-pod.service >/dev/null 2>&1; then
               echo "❌ Web infrastructure service failed (attempt $i/$WEB_ATTEMPTS)"
-              systemctl --user status web-infra-pod.service --no-pager
+              systemctl --user status webserver-pod.service --no-pager
               
               # Only retry in first few attempts
               if [ $i -le 3 ]; then
                 echo "Restarting failed service..."
-                systemctl --user restart web-infra-pod.service
+                systemctl --user restart webserver-pod.service
               else
                 echo "Service consistently failing, giving up"
                 exit 1
@@ -428,14 +428,14 @@ jobs:
             else
               echo "Web service not ready yet (attempt $i/$WEB_ATTEMPTS)..."
               if [ $((i % 6)) -eq 0 ]; then  # Every 2 minutes, show status
-                systemctl --user status web-infra-pod.service --no-pager || echo "Service not found yet"
+                systemctl --user status webserver-pod.service --no-pager || echo "Service not found yet"
               fi
             fi
             
             if [ $i -eq $WEB_ATTEMPTS ]; then
               echo "❌ Web infrastructure failed to start within 8 minutes"
               echo "Final diagnostics:"
-              systemctl --user status web-infra-pod.service --no-pager || true
+              systemctl --user status webserver-pod.service --no-pager || true
               podman pod ps 2>/dev/null || true
               exit 1
             fi

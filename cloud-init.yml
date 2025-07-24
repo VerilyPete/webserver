@@ -64,7 +64,7 @@ write_files:
       CLOUDFLARE_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
       FORMSPREE_ENDPOINT="${FORMSPREE_ENDPOINT:-}"
       HOSTNAME_VAR="${HOSTNAME:-$DEFAULT_HOSTNAME}"
-      cat > /home/opc/web-infra/.env << EOF
+      cat > /home/opc/webserver/.env << EOF
       TAILSCALE_AUTH_KEY=$TAILSCALE_KEY
       HOSTNAME=$HOSTNAME_VAR
       CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TOKEN
@@ -74,24 +74,24 @@ write_files:
       OCI_INSTANCE_ID=$INSTANCE_ID
       OCI_REGION=$REGION
       EOF
-      chown opc:opc /home/opc/web-infra/.env
-      chmod 600 /home/opc/web-infra/.env
+      chown opc:opc /home/opc/webserver/.env
+      chmod 600 /home/opc/webserver/.env
     owner: root:root
     permissions: '0755'
 
-  - path: /usr/local/bin/deploy-web-infra.sh
+  - path: /usr/local/bin/deploy-webserver.sh
     content: |
       #!/bin/bash
       set -e
       cd /home/opc
       chown opc:opc /home/opc
-      if [ ! -d "web-infra" ]; then
-        sudo -u opc git clone https://github.com/VerilyPete/web-infra.git
+      if [ ! -d "webserver" ]; then
+        sudo -u opc git clone https://github.com/VerilyPete/webserver.git webserver
       else
-        cd web-infra && sudo -u opc git pull && cd ..
+        cd webserver && sudo -u opc git pull && cd ..
       fi
-      cd web-infra
-      chown -R opc:opc /home/opc/web-infra
+      cd webserver
+      chown -R opc:opc /home/opc/webserver
       /usr/local/bin/create-env-from-metadata.sh
       sudo -u opc podman pull --quiet k8s.gcr.io/pause:3.9
       sudo -u opc podman pull --quiet ghcr.io/verilypete/webserver:latest
@@ -100,13 +100,13 @@ write_files:
       if [ -f ".env" ]; then
         source .env
         if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [[ "$TAILSCALE_AUTH_KEY" == tskey-* ]]; then
-          (sleep 15 && export XDG_RUNTIME_DIR="/run/user/$(id -u opc)" && sudo -u opc systemctl --user start web-infra-pod.service) &
+          (sleep 15 && export XDG_RUNTIME_DIR="/run/user/$(id -u opc)" && sudo -u opc systemctl --user start webserver-pod.service) &
         fi
       fi
     owner: root:root
     permissions: '0755'
 
-  - path: /home/opc/.config/systemd/user/web-infra-pod.service
+  - path: /home/opc/.config/systemd/user/webserver-pod.service
     content: |
       [Unit]
       Description=Web Infrastructure Pod
@@ -117,12 +117,12 @@ write_files:
       Type=forking
       Restart=on-failure
       TimeoutStopSec=70
-      WorkingDirectory=%h/web-infra
+      WorkingDirectory=%h/webserver
       Environment=PODMAN_SYSTEMD_UNIT=%n
-      ExecStartPre=/usr/bin/podman pod create --name web-infra-pod --publish 8081:8081 --replace
-      ExecStart=/usr/bin/bash -c 'cd %h/web-infra && /usr/local/bin/start-web-pod.sh'
-      ExecStop=/usr/bin/podman pod stop web-infra-pod
-      ExecStopPost=/usr/bin/podman pod rm -f web-infra-pod
+      ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
+      ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
+      ExecStop=/usr/bin/podman pod stop webserver-pod
+      ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
       [Install]
       WantedBy=default.target
     owner: opc:opc
@@ -138,16 +138,16 @@ write_files:
       else
         echo "ERROR: .env file not found" && exit 1
       fi
-      podman run -d --name web-pod --pod web-infra-pod --restart unless-stopped k8s.gcr.io/pause:3.9
-      podman run -d --name web --pod web-infra-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
+      podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
+      podman run -d --name web --pod webserver-pod --restart unless-stopped ghcr.io/verilypete/webserver:latest
       if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-        podman run -d --name tailscale --pod web-infra-pod --privileged --restart unless-stopped \
+        podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
           --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
           --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
           tailscale/tailscale:latest
       fi
       if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
-        podman run -d --name cloudflared --pod web-infra-pod --restart unless-stopped \
+        podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
           --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" cloudflare/cloudflared:latest tunnel --no-autoupdate run
       fi
     owner: root:root
@@ -233,7 +233,7 @@ runcmd:
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /etc/systemd/journald.conf.d
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
-    cat > /home/opc/.config/systemd/user/web-infra-pod.service << 'EOF'
+    cat > /home/opc/.config/systemd/user/webserver-pod.service << 'EOF'
     [Unit]
     Description=Web Infrastructure Pod
     Wants=network-online.target
@@ -243,16 +243,16 @@ runcmd:
     Type=forking
     Restart=on-failure
     TimeoutStopSec=70
-    WorkingDirectory=%h/web-infra
+    WorkingDirectory=%h/webserver
     Environment=PODMAN_SYSTEMD_UNIT=%n
-    ExecStartPre=/usr/bin/podman pod create --name web-infra-pod --publish 8081:8081 --replace
-    ExecStart=/usr/bin/bash -c 'cd %h/web-infra && /usr/local/bin/start-web-pod.sh'
-    ExecStop=/usr/bin/podman pod stop web-infra-pod
-    ExecStopPost=/usr/bin/podman pod rm -f web-infra-pod
+    ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
+    ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
+    ExecStop=/usr/bin/podman pod stop webserver-pod
+    ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
     [Install]
     WantedBy=default.target
     EOF
-  - chown opc:opc /home/opc/.config/systemd/user/web-infra-pod.service
+  - chown opc:opc /home/opc/.config/systemd/user/webserver-pod.service
   - |
     for script in /usr/local/bin/*.sh; do
       if [ -f "$script" ]; then chmod +x "$script"; fi
@@ -272,16 +272,16 @@ runcmd:
   - firewall-cmd --reload
   - (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
   - |
-    if [ -x /usr/local/bin/deploy-web-infra.sh ]; then
-      /usr/local/bin/deploy-web-infra.sh
+    if [ -x /usr/local/bin/deploy-webserver.sh ]; then
+      /usr/local/bin/deploy-webserver.sh
     fi
   - |
     export XDG_RUNTIME_DIR="/run/user/$(id -u opc)"
     sudo -u opc systemctl --user daemon-reload
   - |
-    if [ -f /home/opc/.config/systemd/user/web-infra-pod.service ]; then
+    if [ -f /home/opc/.config/systemd/user/webserver-pod.service ]; then
       export XDG_RUNTIME_DIR="/run/user/$(id -u opc)"
-      sudo -u opc systemctl --user enable web-infra-pod.service
+      sudo -u opc systemctl --user enable webserver-pod.service
     fi
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/*
   - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron
@@ -289,4 +289,4 @@ runcmd:
 
 final_message: |
   Web infrastructure deployed! Access at http://[instance-ip]:8081
-  Manual start: sudo -u opc systemctl --user start web-infra-pod
+  Manual start: sudo -u opc systemctl --user start webserver-pod
