@@ -366,7 +366,7 @@ jobs:
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 20
+        timeout-minutes: 12
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
           echo "Waiting for instance to be fully ready at $PUBLIC_IP..."
@@ -399,46 +399,88 @@ jobs:
           
           echo "Checking cloud-init status..."
           
-          # Improved cloud-init monitoring with better error handling
-          echo "Waiting for cloud-init to complete..."
+          # Primary cloud-init monitoring using log-based verification (more reliable)
+          echo "Waiting for cloud-init to complete (max 8 minutes)..."
           
-          # First, wait for cloud-init to finish (with timeout)
-          if timeout 900 cloud-init status --wait; then
-            echo "✅ Cloud-init completed within timeout"
-          else
-            EXIT_CODE=$?
-            echo "⚠️ Cloud-init wait exited with code $EXIT_CODE"
-            
-            if [ $EXIT_CODE -eq 124 ]; then
-              echo "⚠️ Timeout: cloud-init exceeded 15 minutes, checking current status..."
+          # Wait for cloud-init to complete by monitoring logs (primary method)
+          CLOUD_INIT_COMPLETE=false
+          TIMEOUT_SECONDS=480  # 8 minutes
+          CHECK_INTERVAL=10    # Check every 10 seconds
+          MAX_CHECKS=$((TIMEOUT_SECONDS / CHECK_INTERVAL))
+          
+          echo "Monitoring cloud-init completion via logs..."
+          for i in $(seq 1 $MAX_CHECKS); do
+            # Check for completion indicators in logs
+            if grep -q "Cloud-init setup completed successfully" /var/log/cloud-init-output.log 2>/dev/null; then
+              echo "✅ Cloud-init completed successfully (found success message in logs)"
+              CLOUD_INIT_COMPLETE=true
+              break
+            elif grep -q "Ran [0-9]* modules with 0 failures" /var/log/cloud-init.log 2>/dev/null; then
+              echo "✅ Cloud-init completed successfully (found success pattern in logs)"
+              CLOUD_INIT_COMPLETE=true
+              break
             fi
+            
+            # Check if cloud-init is still running
+            if pgrep -f cloud-init >/dev/null 2>&1; then
+              echo "Cloud-init still running... (check $i/$MAX_CHECKS)"
+            else
+              # Cloud-init process stopped, check if it completed successfully
+              if [ -f "/var/lib/cloud/data/status.json" ]; then
+                STATUS=$(cat /var/lib/cloud/data/status.json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+                if [ "$STATUS" = "done" ]; then
+                  echo "✅ Cloud-init completed successfully (status file shows done)"
+                  CLOUD_INIT_COMPLETE=true
+                  break
+                fi
+              fi
+            fi
+            
+            sleep $CHECK_INTERVAL
+          done
+          
+          if [ "$CLOUD_INIT_COMPLETE" = "false" ]; then
+            echo "⚠️ Cloud-init monitoring timed out after 8 minutes, checking current status..."
           fi
           
-          # Check current cloud-init status regardless of timeout
-          echo "Current cloud-init status:"
-          cloud-init status --long || true
+          # Fallback: Check cloud-init status command (with permission handling)
+          echo "Checking cloud-init status via command..."
+          sudo cloud-init status --long 2>/dev/null || echo "Could not get detailed status (permission issue)"
           
-          # More lenient status checking - accept 'done' or 'running' as success
-          CURRENT_STATUS=$(cloud-init status | grep "status:" | awk '{print $2}' || echo "unknown")
+          # Final status determination
+          CURRENT_STATUS=""
+          if sudo cloud-init status 2>/dev/null | grep -q "status:"; then
+            CURRENT_STATUS=$(sudo cloud-init status 2>/dev/null | grep "status:" | awk '{print $2}' || echo "unknown")
+          elif [ -f "/var/lib/cloud/data/status.json" ]; then
+            CURRENT_STATUS=$(cat /var/lib/cloud/data/status.json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+          elif [ -f "/run/cloud-init/result.json" ]; then
+            CURRENT_STATUS=$(cat /run/cloud-init/result.json 2>/dev/null | grep -o '"v1":{"status":"[^"]*"' | cut -d'"' -f6 || echo "unknown")
+          else
+            CURRENT_STATUS="unknown"
+          fi
+          
           echo "Cloud-init status: $CURRENT_STATUS"
           
-          if [ "$CURRENT_STATUS" = "done" ]; then
+          # Final completion verification
+          if [ "$CLOUD_INIT_COMPLETE" = "true" ]; then
+            echo "✅ Cloud-init completion confirmed"
+          elif [ "$CURRENT_STATUS" = "done" ]; then
             echo "✅ Cloud-init completed successfully (status: done)"
           elif [ "$CURRENT_STATUS" = "running" ]; then
             echo "⚠️ Cloud-init still running, but continuing with deployment..."
           elif [ "$CURRENT_STATUS" = "error" ]; then
             echo "❌ Cloud-init reported error status"
-            cloud-init status --long | head -20
+            sudo cloud-init status --long 2>/dev/null | head -20 || echo "Could not get detailed status"
             exit 1
           else
-            echo "⚠️ Cloud-init status: $CURRENT_STATUS - continuing anyway..."
+            echo "⚠️ Cloud-init status unclear, but continuing with deployment..."
           fi
           
-          # Check for critical errors only (ignore warnings)
+          # Check for critical errors only (ignore warnings) - with sudo
           echo "Checking for critical cloud-init errors..."
-          if cloud-init status --long | grep -A 20 "errors:" | grep -v "errors: \[\]" | grep -q "ERROR\|CRITICAL\|FATAL"; then
+          if sudo cloud-init status --long 2>/dev/null | grep -A 20 "errors:" | grep -v "errors: \[\]" | grep -q "ERROR\|CRITICAL\|FATAL"; then
             echo "❌ Cloud-init has critical errors:"
-            cloud-init status --long | grep -A 10 "errors:" | grep -i "error\|critical\|fatal" | head -5
+            sudo cloud-init status --long 2>/dev/null | grep -A 10 "errors:" | grep -i "error\|critical\|fatal" | head -5
             exit 1
           else
             echo "✅ No critical cloud-init errors found"
@@ -451,7 +493,17 @@ jobs:
           sudo tail -20 /var/log/cloud-init-output.log 2>/dev/null || echo "No cloud-init-output.log found"
           echo "=== End cloud-init debugging ==="
           
-          # Run comprehensive cloud-init status check
+          # Final verification: check if cloud-init actually completed successfully
+          echo "=== Final cloud-init completion verification ==="
+          if grep -q "Cloud-init setup completed successfully" /var/log/cloud-init-output.log 2>/dev/null; then
+            echo "✅ CONFIRMED: Cloud-init completed successfully (found success message in logs)"
+          elif grep -q "Ran [0-9]* modules with 0 failures" /var/log/cloud-init.log 2>/dev/null; then
+            echo "✅ CONFIRMED: Cloud-init completed successfully (found success pattern in logs)"
+          else
+            echo "⚠️ Could not confirm cloud-init completion from logs, but continuing..."
+          fi
+          
+          # Run comprehensive cloud-init status check (if script exists)
           echo "=== Running comprehensive cloud-init status check ==="
           if [ -f "/home/opc/webserver/scripts/cloud-init-check.sh" ]; then
             bash /home/opc/webserver/scripts/cloud-init-check.sh
@@ -459,7 +511,7 @@ jobs:
             bash /home/opc/web-infra/scripts/cloud-init-check.sh
           else
             echo "Cloud-init check script not found, using basic status"
-            cloud-init status --long
+            sudo cloud-init status --long 2>/dev/null || echo "Could not get status (permission issue)"
           fi
           CLOUD_INIT_EOF
           

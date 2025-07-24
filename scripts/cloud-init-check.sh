@@ -14,13 +14,13 @@ if ! command -v cloud-init &> /dev/null; then
     exit 1
 fi
 
-# Get basic status
+# Get basic status (with sudo to avoid permission issues)
 echo "1. Basic cloud-init status:"
-cloud-init status || echo "Failed to get status"
+sudo cloud-init status 2>/dev/null || echo "Failed to get status (permission issue)"
 
 echo ""
 echo "2. Detailed cloud-init status:"
-cloud-init status --long || echo "Failed to get detailed status"
+sudo cloud-init status --long 2>/dev/null || echo "Failed to get detailed status (permission issue)"
 
 echo ""
 echo "3. Cloud-init version:"
@@ -87,7 +87,17 @@ fi
 
 echo ""
 echo "=== Status Summary ==="
-STATUS=$(cloud-init status | grep "status:" | awk '{print $2}' || echo "unknown")
+# Try multiple methods to get status
+STATUS=""
+if sudo cloud-init status 2>/dev/null | grep -q "status:"; then
+  STATUS=$(sudo cloud-init status 2>/dev/null | grep "status:" | awk '{print $2}' || echo "unknown")
+elif [ -f "/var/lib/cloud/data/status.json" ]; then
+  STATUS=$(cat /var/lib/cloud/data/status.json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+elif [ -f "/run/cloud-init/result.json" ]; then
+  STATUS=$(cat /run/cloud-init/result.json 2>/dev/null | grep -o '"v1":{"status":"[^"]*"' | cut -d'"' -f6 || echo "unknown")
+else
+  STATUS="unknown"
+fi
 echo "Current status: $STATUS"
 
 case $STATUS in
