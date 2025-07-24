@@ -37,15 +37,13 @@ jobs:
           
           # Create .env file directly
           cat > .env << 'ENV_EOF'
-TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-HOSTNAME=${{ secrets.HOSTNAME }}
-CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
-GHCR_TOKEN=${{ secrets.GITHUB_TOKEN }}
-SERVER_HOST=${{ secrets.SERVER_HOST }}
-APP_PORT=8081
-APP_ENV=production
-ENV_EOF
+          HOSTNAME=${{ steps.hostname.outputs.hostname }}
+          TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+          APP_PORT=8081
+          APP_ENV=production
+          ENV_EOF
           
           chmod 600 .env
          
