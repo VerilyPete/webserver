@@ -1,10 +1,4 @@
 #cloud-config
-
-# Remove unnecessary packages first to speed up updates
-bootcmd:
-  - dnf remove -y --skip-broken kernel-tools perf tuned kexec-tools libreport-* man man-pages info strace ltrace || true
-  - dnf clean all
-
 package_update: false
 package_upgrade: false
 
