@@ -298,240 +298,153 @@ jobs:
 
       - name: Wait for cloud-init and services to be ready
         if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 35  # Increased for 30-minute cloud-init timeout plus buffer
+        timeout-minutes: 25  # Reduced from 35
         run: |
           PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
           echo "Waiting for instance to be fully ready at $PUBLIC_IP..."
           
-          # Function to check if SSH is ready
+          # Function to check SSH connectivity
           check_ssh() {
-            timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$PUBLIC_IP "echo 'SSH Ready'" >/dev/null 2>&1
+            timeout 8 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$PUBLIC_IP "echo 'SSH Ready'" >/dev/null 2>&1
           }
           
-          # Wait for SSH to be available (up to 8 minutes)
-          echo "1. Waiting for SSH access..."
-          SSH_READY=false
-          for i in {1..48}; do  # 48 attempts × 10 seconds = 8 minutes
+          # Step 1: Wait for SSH (max 5 minutes)
+          echo "Step 1: Waiting for SSH access..."
+          SSH_ATTEMPTS=30  # 30 * 10 seconds = 5 minutes
+          for i in $(seq 1 $SSH_ATTEMPTS); do
             if check_ssh; then
-              echo "✅ SSH connection successful (attempt $i)"
-              SSH_READY=true
+              echo "✅ SSH connection successful (attempt $i/$SSH_ATTEMPTS)"
               break
             fi
-            echo "SSH attempt $i/48 failed, waiting 10 seconds..."
+            if [ $i -eq $SSH_ATTEMPTS ]; then
+              echo "❌ SSH connection failed after 5 minutes"
+              exit 1
+            fi
+            echo "SSH attempt $i/$SSH_ATTEMPTS failed, waiting 10 seconds..."
             sleep 10
           done
           
-          if [ "$SSH_READY" = "false" ]; then
-            echo "❌ SSH connection failed after 8 minutes"
-            echo "Instance may have failed to start properly"
-            exit 1
+          # Step 2: Wait for cloud-init with simpler, more reliable approach
+          echo "Step 2: Waiting for cloud-init to complete..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'CLOUD_INIT_EOF'
+          set -e
+          
+          echo "Checking cloud-init status..."
+          
+          # Simple approach: use cloud-init status --wait with reasonable timeout
+          if timeout 900 cloud-init status --wait; then  # 15 minutes max
+            echo "✅ Cloud-init completed successfully"
+            cloud-init status --long
+          else
+            EXIT_CODE=$?
+            echo "⚠️ Cloud-init wait exited with code $EXIT_CODE"
+            
+            if [ $EXIT_CODE -eq 124 ]; then
+              echo "❌ Timeout: cloud-init exceeded 15 minutes"
+              exit 1
+            fi
+            
+            # Check current status
+            echo "Current cloud-init status:"
+            cloud-init status --long || true
+            
+            # If status shows done, continue despite timeout
+            if cloud-init status | grep -q "status: done"; then
+              echo "✅ Cloud-init shows 'done' status, continuing..."
+            else
+              echo "❌ Cloud-init not completed, exiting"
+              exit 1
+            fi
           fi
           
-          # Wait for cloud-init to complete (up to 20 minutes) using multiple reliable methods
-          echo "2. Waiting for cloud-init to complete..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP '
-            echo "Using cloud-init status --wait (most reliable method)..."
-            
-            # Method 1: Use cloud-init status --wait with timeout (recommended approach)
-            if timeout 1800 cloud-init status --wait; then  # 30 minutes timeout
-              echo "✅ Cloud-init completed successfully via status --wait"
-              sudo cloud-init status --long
-            else
-              WAIT_EXIT_CODE=$?
-              echo "⚠️  cloud-init status --wait exited with code $WAIT_EXIT_CODE"
-              
-              if [ $WAIT_EXIT_CODE -eq 124 ]; then
-                echo "❌ Timeout: cloud-init did not complete within 30 minutes"
-              else
-                echo "⚠️  Cloud-init may have completed with errors"
-              fi
-              
-              echo "Checking status and attempting fallback methods..."
-              sudo cloud-init status --long || true
-              
-              # Method 2: Check for completion marker files as fallback
-              echo "Checking for completion marker files..."
-              if [ -f "/run/cloud-init/result.json" ]; then
-                echo "✅ Found /run/cloud-init/result.json - cloud-init appears complete"
-                if command -v jq >/dev/null 2>&1; then
-                  echo "Result summary:"
-                  sudo jq -r ".v1.errors // []" /run/cloud-init/result.json 2>/dev/null || echo "Could not parse result.json"
-                fi
-              elif [ -f "/var/lib/cloud/instance/boot-finished" ]; then
-                echo "✅ Found /var/lib/cloud/instance/boot-finished - cloud-init appears complete"
-              else
-                echo "⚠️  No completion markers found"
-                
-                # Method 3: Check systemd services as final fallback
-                echo "Checking systemd service status..."
-                ALL_SERVICES_DONE=true
-                for service in cloud-init-local cloud-init cloud-config cloud-final; do
-                  if systemctl is-active ${service}.service >/dev/null 2>&1; then
-                    echo "⚠️  ${service}.service is still active"
-                    ALL_SERVICES_DONE=false
-                  elif systemctl is-failed ${service}.service >/dev/null 2>&1; then
-                    echo "❌ ${service}.service failed"
-                    systemctl status ${service}.service --no-pager || true
-                  else
-                    echo "✅ ${service}.service completed"
-                  fi
-                done
-                
-                if [ "$ALL_SERVICES_DONE" = "true" ]; then
-                  echo "✅ All cloud-init systemd services completed"
-                else
-                  echo "⚠️  Some cloud-init services still running or failed"
-                fi
-              fi
-              
-              echo "Proceeding with deployment despite cloud-init concerns..."
-            fi
-            
-            # Final verification and logging
-            echo ""
-            echo "=== Final Cloud-init Status ==="
-            sudo cloud-init status || true
-            echo ""
-            echo "=== Cloud-init Errors Summary ==="
-            if sudo cloud-init status --long | grep -q "errors:"; then
-              echo "⚠️  Cloud-init completed with errors:"
-              sudo cloud-init status --long | sed -n '/errors:/,/recoverable_errors:/p' | head -20
-              echo ""
-              echo "💡 Common fix: If write_files errors about user 'opc' not found,"
-              echo "   add 'defer: true' to write_files entries that set owner: opc"
-              echo "   This delays file creation until after users are created."
-            else
-              echo "✅ No cloud-init errors reported"
-            fi
-            echo ""
-            echo "=== Cloud-init Boot Times ==="
-            sudo cloud-init analyze show 2>/dev/null | head -20 || echo "Analysis not available"
-          '
+          # Simple and reliable error check
+          echo "Checking for cloud-init errors..."
+          if cloud-init status | grep -q "status: error"; then
+            echo "❌ Cloud-init reported error status"
+            cloud-init status --long | head -20
+            exit 1
+          elif cloud-init status --long | grep -A 20 "errors:" | grep -v "errors: \[\]" | grep -q "\- "; then
+            echo "⚠️ Cloud-init completed with some errors:"
+            cloud-init status --long | grep -A 10 "errors:" | grep "\- " | head -3
+          else
+            echo "✅ Cloud-init completed successfully with no errors"
+          fi
+          CLOUD_INIT_EOF
           
-          # Wait for web infrastructure to start (up to 8 minutes)
-          echo "3. Waiting for web infrastructure to start..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP '
-            echo "Checking and fixing podman user service prerequisites..."
-            
-            # 1. Ensure lingering is enabled (critical for boot startup)
-            if ! loginctl show-user opc | grep -q "Linger=yes"; then
-              echo "Enabling user lingering for boot startup..."
-              sudo loginctl enable-linger opc
-            else
-              echo "✅ User lingering already enabled"
-            fi
-            
-            # 2. Set up proper runtime directory permissions
-            if [ ! -d "/run/user/$(id -u)" ]; then
-              echo "Creating user runtime directory..."
-              sudo mkdir -p "/run/user/$(id -u)"
-              sudo chown $(id -u):$(id -g) "/run/user/$(id -u)"
-              sudo chmod 700 "/run/user/$(id -u)"
-            fi
-            
-            # 3. Ensure XDG_RUNTIME_DIR is set
-            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-            
-            # 4. Check if systemd user directory exists
-            if [ ! -d "$HOME/.config/systemd/user" ]; then
-              echo "Creating systemd user directory..."
-              mkdir -p "$HOME/.config/systemd/user"
-            fi
-            
-            # 5. Reload systemd user daemon to pick up any changes
-            systemctl --user daemon-reload 2>/dev/null || {
-              echo "⚠️  Could not reload user systemd daemon, trying to start user systemd..."
-              # Start user systemd instance if it is not running
-              sudo systemctl start user@$(id -u).service || true
-              sleep 2
-              systemctl --user daemon-reload || true
-            }
-            
-            echo "Checking web infrastructure service status..."
-            WEB_READY=false
-            for i in {1..24}; do  # 24 attempts × 20 seconds = 8 minutes
-              # Check if service exists first
-              if systemctl --user list-unit-files | grep -q "web-infra-pod.service"; then
-                echo "Service file found, checking status..."
-                
-                if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
-                  echo "✅ Web infrastructure is running (attempt $i)"
-                  systemctl --user status web-infra-pod.service --no-pager
-                  
-                  # Verify podman containers are actually running
-                  if podman pod ps --format "{{.Status}}" 2>/dev/null | grep -q "Running"; then
-                    echo "✅ Podman containers are running"
-                    podman pod ps
-                  else
-                    echo "⚠️  Service active but no containers running yet..."
-                  fi
-                  
-                  WEB_READY=true
-                  break
-                elif systemctl --user is-failed web-infra-pod.service >/dev/null 2>&1; then
-                  echo "❌ Web infrastructure service failed (attempt $i)"
-                  echo "Service status:"
-                  systemctl --user status web-infra-pod.service --no-pager || true
-                  echo "Recent logs:"
-                  journalctl --user -u web-infra-pod.service --no-pager -n 10 || true
-                  
-                  # Try to restart the service
-                  if [ $i -le 3 ]; then
-                    echo "Attempting to restart service..."
-                    systemctl --user restart web-infra-pod.service || true
-                  fi
-                else
-                  echo "Web infrastructure not ready yet (attempt $i/24)..."
-                  systemctl --user status web-infra-pod.service --no-pager || true
-                fi
+          # Step 3: Wait for web infrastructure (max 8 minutes)
+          echo "Step 3: Waiting for web infrastructure..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'WEB_INFRA_EOF'
+          set -e
+          
+          # Setup user systemd environment
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          
+          # Enable lingering if not already enabled
+          if ! loginctl show-user opc 2>/dev/null | grep -q "Linger=yes"; then
+            echo "Enabling user lingering..."
+            sudo loginctl enable-linger opc
+            sleep 2
+          fi
+          
+          # Reload systemd user daemon
+          systemctl --user daemon-reload 2>/dev/null || {
+            echo "Starting user systemd instance..."
+            sudo systemctl start user@$(id -u).service
+            sleep 3
+            systemctl --user daemon-reload
+          }
+          
+          # Wait for service to be ready
+          echo "Waiting for web-infra-pod service..."
+          WEB_ATTEMPTS=24  # 24 * 20 seconds = 8 minutes
+          
+          for i in $(seq 1 $WEB_ATTEMPTS); do
+            if systemctl --user is-active web-infra-pod.service >/dev/null 2>&1; then
+              echo "✅ Web infrastructure is running (attempt $i/$WEB_ATTEMPTS)"
+              systemctl --user status web-infra-pod.service --no-pager
+              
+              # Quick container check
+              if podman pod ps --format "{{.Status}}" 2>/dev/null | grep -q "Running"; then
+                echo "✅ Podman containers confirmed running"
+                podman pod ps
+                break
               else
-                echo "⚠️  web-infra-pod.service not found (attempt $i/24)"
-                echo "Available user services:"
-                systemctl --user list-unit-files --type=service | head -10 || true
-                
-                # Check if cloud-init created the service yet
-                if [ -f "$HOME/.config/systemd/user/web-infra-pod.service" ]; then
-                  echo "Service file exists, reloading daemon..."
-                  systemctl --user daemon-reload || true
-                else
-                  echo "Service file not created yet by cloud-init"
-                fi
+                echo "⚠️ Service active but containers not ready, waiting..."
               fi
               
-              # Show final status if this is the last attempt
-              if [ $i -eq 24 ]; then
-                echo "⚠️  Web infrastructure did not start within 8 minutes"
-                echo ""
-                echo "=== Diagnostics ==="
-                echo "User systemd status:"
-                systemctl --user status --no-pager || true
-                echo ""
-                echo "Service file location:"
-                ls -la "$HOME/.config/systemd/user/" 2>/dev/null || echo "No user systemd directory"
-                echo ""
-                echo "Podman status:"
-                podman pod ps 2>/dev/null || echo "Podman not working"
-                echo ""
-                echo "System journal (last 20 lines):"
-                journalctl --user -u web-infra-pod.service --no-pager -n 20 2>/dev/null || echo "No service logs"
-                echo ""
-                echo "Cloud-init logs (last 10 lines):"
-                sudo tail -10 /var/log/cloud-init-output.log 2>/dev/null || echo "No cloud-init output log"
+            elif systemctl --user is-failed web-infra-pod.service >/dev/null 2>&1; then
+              echo "❌ Web infrastructure service failed (attempt $i/$WEB_ATTEMPTS)"
+              systemctl --user status web-infra-pod.service --no-pager
+              
+              # Only retry in first few attempts
+              if [ $i -le 3 ]; then
+                echo "Restarting failed service..."
+                systemctl --user restart web-infra-pod.service
+              else
+                echo "Service consistently failing, giving up"
+                exit 1
               fi
               
-              sleep 20
-            done
-            
-            if [ "$WEB_READY" = "false" ]; then
-              echo ""
-              echo "🔧 Troubleshooting Steps:"
-              echo "1. Check cloud-init completed: sudo cloud-init status"
-              echo "2. Check user systemd: systemctl --user status"
-              echo "3. Check podman: podman pod ps"
-              echo "4. Check logs: journalctl --user -u web-infra-pod.service"
-              echo "5. Manual start: systemctl --user start web-infra-pod.service"
+            else
+              echo "Web service not ready yet (attempt $i/$WEB_ATTEMPTS)..."
+              if [ $((i % 6)) -eq 0 ]; then  # Every 2 minutes, show status
+                systemctl --user status web-infra-pod.service --no-pager || echo "Service not found yet"
+              fi
             fi
-          '
+            
+            if [ $i -eq $WEB_ATTEMPTS ]; then
+              echo "❌ Web infrastructure failed to start within 8 minutes"
+              echo "Final diagnostics:"
+              systemctl --user status web-infra-pod.service --no-pager || true
+              podman pod ps 2>/dev/null || true
+              exit 1
+            fi
+            
+            sleep 20
+          done
+          
+          echo "✅ Web infrastructure is ready!"
+          WEB_INFRA_EOF
 
       - name: Verify deployment
         run: |
