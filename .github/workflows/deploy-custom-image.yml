@@ -285,7 +285,7 @@ jobs:
           sleep 2
           systemctl --user daemon-reload
           systemctl --user enable webserver-pod.service
-          systemctl --user start webserver-pod.service
+          systemctl --user restart webserver-pod.service
           
           echo "✅ Infrastructure setup completed successfully"
           EOF
