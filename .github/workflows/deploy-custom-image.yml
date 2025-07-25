@@ -1,5 +1,5 @@
-# .github/workflows/deploy-infrastructure.yml
-name: Deploy Web Infrastructure
+# .github/workflows/deploy-custom-image.yml
+name: Deploy Custom Image
 
 on:
   workflow_dispatch:
