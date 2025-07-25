@@ -51,59 +51,7 @@ jobs:
           command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}"  --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
           silent: false
 
-      - name: Debug environment variables
-        if: github.event.inputs.deploy_type == 'update'
-        run: |
-          echo "=== GitHub Actions Environment ==="
-          echo "GITHUB_ACTOR: $GITHUB_ACTOR"
-          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-          
-          echo "=== OCI Environment Variables (partial) ==="
-          echo "OCI_CLI_USER: ${OCI_CLI_USER:0:25}..."
-          echo "OCI_CLI_TENANCY: ${OCI_CLI_TENANCY:0:25}..."
-          echo "OCI_CLI_REGION: $OCI_CLI_REGION"
-          echo "OCI_CLI_FINGERPRINT: $OCI_CLI_FINGERPRINT"
-          
-          echo "=== Validating OCID Formats ==="
-          if [[ $OCI_CLI_USER == ocid1.user.oc1.* ]]; then
-            echo "✅ User OCID format looks correct"
-          else
-            echo "❌ User OCID format looks wrong - should start with 'ocid1.user.oc1.'"
-          fi
-          
-          if [[ $OCI_CLI_TENANCY == ocid1.tenancy.oc1.* ]]; then
-            echo "✅ Tenancy OCID format looks correct"  
-          else
-            echo "❌ Tenancy OCID format looks wrong - should start with 'ocid1.tenancy.oc1.'"
-          fi
-          
-          if [[ $OCI_CLI_FINGERPRINT =~ ^[a-f0-9]{2}(:[a-f0-9]{2}){15}$ ]]; then
-            echo "✅ Fingerprint format looks correct"
-          else
-            echo "❌ Fingerprint format looks wrong - should be 16 colon-separated hex pairs"
-          fi
 
-      - name: Test basic OCI connectivity
-        if: github.event.inputs.deploy_type == 'update'
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 2
-        continue-on-error: true
-        id: test_connection
-        with:
-          command: 'iam region list'
-          silent: false
-
-      - name: Debug OCI connection result
-        if: github.event.inputs.deploy_type == 'update'
-        run: |
-          echo "=== OCI Connection Test Result ==="
-          if [ "${{ steps.test_connection.outcome }}" = "success" ]; then
-            echo "✅ OCI connection successful"
-            echo "Regions output: ${{ steps.test_connection.outputs.output }}"
-          else
-            echo "❌ OCI connection failed"
-            echo "This suggests an authentication issue with your OCI credentials"
-          fi
 
       - name: Find existing instance (update)
         if: github.event.inputs.deploy_type == 'update'
@@ -140,289 +88,75 @@ jobs:
           command: 'compute instance list-vnics --instance-id "${{ steps.check_instance.outputs.instance_id }}"'
           query: 'data[0].\"public-ip\"'
 
-      - name: Setup SSH key for update
-        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
+      - name: Setup SSH key
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch')
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           chmod 700 ~/.ssh
 
-      - name: Update existing infrastructure
-        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true'
-        timeout-minutes: 8  # Reduced timeout
+      - name: Setup infrastructure
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch')
+        timeout-minutes: 8
         run: |
-          PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
-          PUBLIC_IP=$(echo $PUBLIC_IP | tr -d '"')
-          
-          echo "Found instance with IP: $PUBLIC_IP"
-          
-          # Quick SSH connectivity check
-          echo "Checking SSH access..."
-          SSH_READY=false
-          for i in {1..12}; do  # 12 attempts × 5 seconds = 1 minute max
-            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
-              echo "✅ SSH connection successful (attempt $i)"
-              SSH_READY=true
-              break
-            fi
-            echo "SSH attempt $i/12 failed, waiting 5 seconds..."
-            sleep 5
-          done
-          
-          if [ "$SSH_READY" = "false" ]; then
-            echo "❌ SSH connection failed after 1 minute"
-            exit 1
+          # Determine which IP to use
+          if [ "${{ github.event.inputs.deploy_type }}" = "update" ]; then
+            PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
+            echo "Updating existing instance at $PUBLIC_IP"
+          else
+            PUBLIC_IP="${{ steps.get_new_ip.outputs.output }}"
+            echo "Setting up fresh instance at $PUBLIC_IP"
           fi
           
-          # Update the running infrastructure
-          echo "Updating infrastructure..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$PUBLIC_IP << 'EOF'
-            set -e  # Exit on any error
-            
-            echo "Ensuring system configuration is up to date..."
-            
-            # Enable user lingering and setup subuid/subgid (if not already done)
-            sudo loginctl enable-linger opc
-            if ! grep -q "^opc:" /etc/subuid; then echo "opc:100000:65536" >> /etc/subuid; fi
-            if ! grep -q "^opc:" /etc/subgid; then echo "opc:100000:65536" >> /etc/subgid; fi
-            
-            # Setup cron job for podman cleanup (if not already done)
-            if ! crontab -l 2>/dev/null | grep -q "podman-cleanup.sh"; then
-              (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
-            fi
-            
-            # Create cleanup script (if not exists)
-            if [ ! -f "/usr/local/bin/podman-cleanup.sh" ]; then
-              sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF'
-              #!/bin/bash
-              for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
-                if id "$user" &>/dev/null; then
-                  sudo -u "$user" podman container prune -f 2>/dev/null || true
-                  sudo -u "$user" podman image prune -af --filter "until=24h" 2>/dev/null || true
-                  sudo -u "$user" podman volume prune -f 2>/dev/null || true
-                  sudo -u "$user" podman system prune -af 2>/dev/null || true
-                fi
-              done
-              podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
-              buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
-              CLEANUP_EOF
-              sudo chmod +x /usr/local/bin/podman-cleanup.sh
-            fi
-            
-            echo "✅ System configuration verified"
-            
-            echo "Ensuring container infrastructure is properly configured..."
-            
-            # Create systemd service files (if not exists)
-            mkdir -p ~/.config/systemd/user
-            
-            cat > ~/.config/systemd/user/webserver-pod.service << 'SERVICE_EOF'
-            [Unit]
-            Description=Web Infrastructure Pod
-            Wants=network-online.target
-            After=network-online.target
-            RequiresMountsFor=%t/containers
-            
-            [Service]
-            Type=oneshot
-            RemainAfterExit=yes
-            Restart=on-failure
-            TimeoutStopSec=70
-            WorkingDirectory=%h/webserver
-            Environment=PODMAN_SYSTEMD_UNIT=%n
-            ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
-            ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
-            ExecStop=/usr/bin/podman pod stop webserver-pod
-            ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
-            
-            [Install]
-            WantedBy=default.target
-            SERVICE_EOF
-            
-            # Create start script (if not exists)
-            if [ ! -f "/usr/local/bin/start-web-pod.sh" ]; then
-              sudo tee /usr/local/bin/start-web-pod.sh > /dev/null << 'START_EOF'
-              #!/bin/bash
-              set -e
-              if [ -f ".env" ]; then
-                set -a && source .env && set +a
-              else
-                echo "ERROR: .env file not found" && exit 1
-              fi
-              
-              # Ensure the pod exists
-              echo "Ensuring webserver-pod exists..."
-              podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
-              
-              # Stop and remove existing containers to avoid conflicts
-              podman stop web-pod web tailscale cloudflared 2>/dev/null || true
-              podman rm web-pod web tailscale cloudflared 2>/dev/null || true
-              
-              # Pull latest web server image
-              echo "Pulling latest web server image..."
-              podman pull ghcr.io/verilypete/webserver:latest || {
-                echo "❌ Failed to pull web server image"
-                exit 1
-              }
-              
-          # Create nginx configuration with proper Formspree endpoint
-          echo "Creating nginx configuration with Formspree endpoint..."
-          podman run --rm --name nginx-config-helper \
-            --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
-            ghcr.io/verilypete/webserver:latest \
-            sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
-            chmod 644 /tmp/nginx-fixed.conf
-            sudo chown 0:0 /tmp/nginx-fixed.conf
-          
-          # Start containers
-          podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
-          podman run -d --name web --pod webserver-pod --restart unless-stopped \
-            --mount type=bind,source=/tmp/nginx-fixed.conf,target=/etc/nginx/nginx.conf,ro \
-            ghcr.io/verilypete/webserver:latest
-              if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-                podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
-                  --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
-                  --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
-                  docker.io/tailscale/tailscale:latest
-              fi
-              if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
-                podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
-                  --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
-              fi
-              
-              echo "✅ Web infrastructure started successfully"
-              
-              # Service is complete - containers will continue running independently
-              echo "✅ Service startup complete - containers are running independently"
-              START_EOF
-              sudo chmod +x /usr/local/bin/start-web-pod.sh
-            fi
-            
-            # Setup user systemd environment
-            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-            sudo systemctl start user@$(id -u).service
-            sleep 2
-            systemctl --user daemon-reload
-            systemctl --user enable webserver-pod.service
-            systemctl --user start webserver-pod.service
-            
-            echo "✅ Container infrastructure verified"
-            
-            echo "Updating repository..."
-            cd ~/webserver
-            git pull origin main || {
-              echo "❌ Git pull failed"
-              exit 1
-            }
-            
-            echo "Creating .env file..."
-            cat > .env << 'ENV_EOF'
-            HOSTNAME=${{ steps.hostname.outputs.hostname }}
-            TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-            CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-            FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
-            APP_PORT=8081
-            APP_ENV=production
-            ENV_EOF
-            
-            chmod 600 .env
-            
-            echo "✅ Infrastructure update completed successfully"
-          EOF
-
-      - name: Handle no existing instance
-        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'false'
-        run: |
-          echo "❌ No running instance found with 'web-server' in the name"
-          echo "💡 Use 'fresh_deploy' to create a new instance"
-          exit 1
-
-      - name: Debug instance creation output
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        id: parse_instance_id
-        run: |
-          echo "=== Raw create_instance output ==="
-          echo '${{ steps.create_instance.outputs.output }}'
-          echo ""
-          echo "=== Extracting instance ID ==="
-          # Remove outer quotes and unescape the JSON string
-          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
-          echo "Cleaned JSON:"
-          echo "$CLEAN_JSON"
-          echo ""
-          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
-          echo "Extracted instance ID: $INSTANCE_ID"
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-
-      - name: Display new instance info (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 2
-        continue-on-error: true
-        with:
-          command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
-          query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
-
-      - name: Get new instance IP (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 3
-        id: get_new_ip
-        continue-on-error: true
-        with:
-          command: 'compute instance list-vnics --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
-          query: 'data[0].\"public-ip\"'
-
-      - name: Setup SSH key for fresh deploy
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          chmod 700 ~/.ssh
-
-      - name: Wait for SSH and setup infrastructure
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 8  # Reduced timeout since no cloud-init waiting
-        run: |
-          PUBLIC_IP=$(echo '${{ steps.get_new_ip.outputs.output }}' | tr -d '"')
-          echo "Waiting for instance to be ready at $PUBLIC_IP..."
+          PUBLIC_IP=$(echo $PUBLIC_IP | tr -d '"')
           
           # Quick SSH connectivity check
           echo "Checking SSH access..."
           SSH_READY=false
-          for i in {1..12}; do  # 12 attempts × 10 seconds = 2 minutes max
+          MAX_ATTEMPTS=12
+          if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ]; then
+            MAX_ATTEMPTS=12  # 2 minutes for fresh deploy
+            SLEEP_TIME=10
+          else
+            MAX_ATTEMPTS=12  # 1 minute for update
+            SLEEP_TIME=5
+          fi
+          
+          for i in $(seq 1 $MAX_ATTEMPTS); do
             if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$PUBLIC_IP "echo 'SSH Ready'" 2>/dev/null; then
               echo "✅ SSH connection successful (attempt $i)"
               SSH_READY=true
               break
             fi
-            if [ $i -eq 12 ]; then
-              echo "❌ SSH connection failed after 2 minutes"
+            if [ $i -eq $MAX_ATTEMPTS ]; then
+              echo "❌ SSH connection failed after maximum attempts"
               exit 1
             fi
-            echo "SSH attempt $i/12 failed, waiting 10 seconds..."
-            sleep 10
+            echo "SSH attempt $i/$MAX_ATTEMPTS failed, waiting ${SLEEP_TIME} seconds..."
+            sleep $SLEEP_TIME
           done
           
-          # Step 1: Setup system configuration
-          echo "Step 1: Setting up system configuration..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'SYSTEM_SETUP_EOF'
+          # Setup infrastructure as a fresh deployment
+          echo "Setting up infrastructure..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'EOF'
           set -e
           
           echo "Setting up system configuration..."
           
           # Enable user lingering and setup subuid/subgid
           sudo loginctl enable-linger opc
-          if ! grep -q "^opc:" /etc/subuid; then echo "opc:100000:65536" >> /etc/subuid; fi
-          if ! grep -q "^opc:" /etc/subgid; then echo "opc:100000:65536" >> /etc/subgid; fi
+          if ! grep -q "^opc:" /etc/subuid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subuid; fi
+          if ! grep -q "^opc:" /etc/subgid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subgid; fi
           
-          # Setup cron job for podman cleanup
-          (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
+          # Setup cron job for podman cleanup (if not already done)
+          if ! crontab -l 2>/dev/null | grep -q "podman-cleanup.sh"; then
+            (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
+          fi
           
-          # Create cleanup script
-          sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF'
+          # Create cleanup script (if not exists)
+          if [ ! -f "/usr/local/bin/podman-cleanup.sh" ]; then
+            sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF'
           #!/bin/bash
           for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
             if id "$user" &>/dev/null; then
@@ -435,24 +169,18 @@ jobs:
           podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
           buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
           CLEANUP_EOF
-          
-          sudo chmod +x /usr/local/bin/podman-cleanup.sh
+            sudo chmod +x /usr/local/bin/podman-cleanup.sh
+          fi
           
           echo "✅ System configuration complete"
-          SYSTEM_SETUP_EOF
-          
-          # Step 2: Setup container infrastructure
-          echo "Step 2: Setting up container infrastructure..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'CONTAINER_SETUP_EOF'
-          set -e
           
           echo "Setting up container infrastructure..."
           
-          # Clone repository if not exists
+          # Clone/update repository
           if [ ! -d "~/webserver" ]; then
             git clone https://github.com/VerilyPete/webserver.git ~/webserver
           else
-            cd ~/webserver && git pull && cd ~
+            cd ~/webserver && git pull origin main && cd ~
           fi
 
           echo "Setting up environment variables..."
@@ -559,16 +287,45 @@ jobs:
           systemctl --user enable webserver-pod.service
           systemctl --user start webserver-pod.service
           
-          echo "✅ Container infrastructure setup complete"
-          CONTAINER_SETUP_EOF
-          
-          # Step 3: Deploy web infrastructure
-          echo "Step 3: Deploying web infrastructure..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'WEB_INFRA_EOF'
-          set -e
-          
-          echo "✅ Web infrastructure deployed successfully!"
-          WEB_INFRA_EOF
+          echo "✅ Infrastructure setup completed successfully"
+          EOF
+
+      - name: Handle no existing instance
+        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'false'
+        run: |
+          echo "❌ No running instance found with 'web-server' in the name"
+          echo "💡 Use 'fresh_deploy' to create a new instance"
+          exit 1
+
+      - name: Parse instance ID (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        id: parse_instance_id
+        run: |
+          # Remove outer quotes and unescape the JSON string
+          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
+          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Display new instance info (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
+          query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
+
+      - name: Get new instance IP (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 3
+        id: get_new_ip
+        continue-on-error: true
+        with:
+          command: 'compute instance list-vnics --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
+          query: 'data[0].\"public-ip\"'
+
+
 
       - name: Verify deployment
         run: |
