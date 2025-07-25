@@ -43,7 +43,7 @@ jobs:
           fi
 
       - name: Deploy new instance (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 15  # Reduced timeout for instance creation
         id: create_instance
@@ -89,7 +89,7 @@ jobs:
           query: 'data[0].\"public-ip\"'
 
       - name: Setup SSH key
-        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch')
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
@@ -97,7 +97,7 @@ jobs:
           chmod 700 ~/.ssh
 
       - name: Setup infrastructure
-        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || (github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch')
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
         timeout-minutes: 8
         run: |
           # Determine which IP to use
@@ -298,7 +298,7 @@ jobs:
           exit 1
 
       - name: Parse instance ID (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
         id: parse_instance_id
         run: |
           # Remove outer quotes and unescape the JSON string
@@ -307,7 +307,7 @@ jobs:
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
 
       - name: Display new instance info (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 2
         continue-on-error: true
@@ -316,7 +316,7 @@ jobs:
           query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
       - name: Get new instance IP (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy' || github.event_name == 'workflow_dispatch'
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 3
         id: get_new_ip
@@ -331,7 +331,7 @@ jobs:
         run: |
           echo "✅ Deployment completed successfully!"
           echo ""
-          if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ]; then
             echo "🆕 New instance created:"
             echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
             echo "   Public IP: ${{ steps.get_new_ip.outputs.output }}"
