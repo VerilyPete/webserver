@@ -61,8 +61,44 @@ jobs:
           
           chmod 600 .env
           
+          # Setup systemd service for proper container management
+          echo "Setting up systemd service..."
+          mkdir -p ~/.config/systemd/user
+          
+          cat > ~/.config/systemd/user/webserver-pod.service << 'SERVICE_EOF'
+          [Unit]
+          Description=Web Infrastructure Pod
+          Wants=network-online.target
+          After=network-online.target
+          RequiresMountsFor=%t/containers
+          
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          Restart=on-failure
+          TimeoutStopSec=70
+          WorkingDirectory=%h/webserver
+          Environment=PODMAN_SYSTEMD_UNIT=%n
+          ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
+          ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
+          ExecStop=/usr/bin/podman pod stop webserver-pod
+          ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
+          
+          [Install]
+          WantedBy=default.target
+          SERVICE_EOF
+          
+          # Create the start script
+          sudo tee /usr/local/bin/start-web-pod.sh > /dev/null << 'START_EOF'
+          #!/bin/bash
+          set -e
+          
           # Load environment variables
-          set -a && source .env && set +a
+          if [ -f ".env" ]; then
+            set -a && source .env && set +a
+          else
+            echo "ERROR: .env file not found" && exit 1
+          fi
           
           # Debug: Echo the environment variable to verify it's loaded
           echo "DEBUG: FORMSPREE_ENDPOINT is: $FORMSPREE_ENDPOINT"
@@ -138,12 +174,32 @@ jobs:
             echo "⚠️ Cloudflare tunnel not configured (token missing or placeholder)"
           fi
           
+          echo "✅ Web infrastructure started successfully"
+          
+          # Service is complete - containers will continue running independently
+          echo "✅ Service startup complete - containers are running independently"
+          START_EOF
+          
+          sudo chmod +x /usr/local/bin/start-web-pod.sh
+          
+          # Setup user systemd environment
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo systemctl start user@$(id -u).service
+          sleep 2
+          systemctl --user daemon-reload
+          systemctl --user enable webserver-pod.service
+          systemctl --user start webserver-pod.service
+          
           echo "✅ Production deployment complete!"
           
           echo ""
           echo "Pod and container status:"
           podman pod ps
           podman ps --filter "pod=webserver-pod"
+          
+          echo ""
+          echo "Systemd service status:"
+          systemctl --user status webserver-pod.service --no-pager -l
           
           echo ""
           echo "🌐 Web server should be available at:"
@@ -154,3 +210,11 @@ jobs:
           if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
             echo "  - Cloudflare: https://[your-tunnel-domain]"
           fi
+          
+          echo ""
+          echo "🔧 Service management commands:"
+          echo "  - Check status: systemctl --user status webserver-pod.service"
+          echo "  - Stop service: systemctl --user stop webserver-pod.service"
+          echo "  - Start service: systemctl --user start webserver-pod.service"
+          echo "  - Restart service: systemctl --user restart webserver-pod.service"
+          echo "  - View logs: journalctl --user -u webserver-pod.service -f"
