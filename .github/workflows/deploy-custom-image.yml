@@ -88,6 +88,15 @@ jobs:
           command: 'compute instance list-vnics --instance-id "${{ steps.check_instance.outputs.instance_id }}"'
           query: 'data[0].\"public-ip\"'
 
+      - name: Parse instance ID (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        id: parse_instance_id
+        run: |
+          # Remove outer quotes and unescape the JSON string
+          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
+          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
       - name: Setup SSH key
         if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
         run: |
@@ -312,15 +321,6 @@ jobs:
           echo "❌ No running instance found with 'web-server' in the name"
           echo "💡 Use 'fresh_deploy' to create a new instance"
           exit 1
-
-      - name: Parse instance ID (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy'
-        id: parse_instance_id
-        run: |
-          # Remove outer quotes and unescape the JSON string
-          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
-          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
 
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
