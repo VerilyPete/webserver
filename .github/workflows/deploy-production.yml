@@ -31,13 +31,27 @@ jobs:
     - name: Deploy to production server
       run: |
         ssh ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          set -e
+          
           cd ~/webserver
           
           echo "🚀 Starting production deployment..."
           
+          # Get existing hostname from the server
+          EXISTING_HOSTNAME=$(hostname)
+          echo "Using existing hostname: $EXISTING_HOSTNAME"
+          
+          # Update repository
+          echo "Updating repository..."
+          git pull origin main || {
+            echo "❌ Git pull failed"
+            exit 1
+          }
+          
           # Create .env file directly
-          cat > .env << 'ENV_EOF'
-          HOSTNAME=${{ steps.hostname.outputs.hostname }}
+          echo "Creating .env file..."
+          cat > .env << ENV_EOF
+          HOSTNAME=$EXISTING_HOSTNAME
           TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
           CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
           FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
@@ -46,8 +60,97 @@ jobs:
           ENV_EOF
           
           chmod 600 .env
-         
-          # Deploy script
-          ./scripts/deploy.sh
+          
+          # Load environment variables
+          set -a && source .env && set +a
+          
+          # Debug: Echo the environment variable to verify it's loaded
+          echo "DEBUG: FORMSPREE_ENDPOINT is: $FORMSPREE_ENDPOINT"
+          
+          # Ensure the pod exists
+          echo "Ensuring webserver-pod exists..."
+          podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
+          
+          # Stop and remove existing containers to avoid conflicts
+          echo "Stopping existing containers..."
+          podman stop web-pod web tailscale cloudflared 2>/dev/null || true
+          podman rm web-pod web tailscale cloudflared 2>/dev/null || true
+          
+          # Pull latest web server image
+          echo "Pulling latest web server image..."
+          podman pull ghcr.io/verilypete/webserver:latest || {
+            echo "❌ Failed to pull web server image"
+            exit 1
+          }
+          
+          # Create nginx configuration with proper Formspree endpoint
+          echo "Creating nginx configuration with Formspree endpoint..."
+          podman run --rm --name nginx-config-helper \
+            --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
+            ghcr.io/verilypete/webserver:latest \
+            sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
+          chmod 644 /tmp/nginx-fixed.conf
+          sudo chown 0:0 /tmp/nginx-fixed.conf
+          
+          # Verify the file was created and contains the substitution
+          if [ -f /tmp/nginx-fixed.conf ]; then
+            echo "✓ Nginx config generated successfully"
+            echo "DEBUG: Checking if substitution worked..."
+            if grep -q "$FORMSPREE_ENDPOINT" /tmp/nginx-fixed.conf; then
+              echo "✓ Formspree endpoint substituted correctly"
+            else
+              echo "⚠️ Formspree endpoint may not have been substituted"
+              echo "First few lines of generated config:"
+              head -10 /tmp/nginx-fixed.conf
+            fi
+          else
+            echo "❌ Failed to generate nginx config"
+            exit 1
+          fi
+          
+          # Start containers
+          echo "Starting containers..."
+          podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
+          
+          podman run -d --name web --pod webserver-pod --restart unless-stopped \
+            --mount type=bind,source=/tmp/nginx-fixed.conf,target=/etc/nginx/nginx.conf,ro \
+            ghcr.io/verilypete/webserver:latest
+          
+          # Start Tailscale if configured
+          if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
+            echo "Starting Tailscale..."
+            podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
+              --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
+              --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
+              docker.io/tailscale/tailscale:latest
+            echo "✓ Tailscale started"
+          else
+            echo "⚠️ Tailscale not configured (key missing or placeholder)"
+          fi
+          
+          # Start Cloudflare tunnel if configured
+          if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
+            echo "Starting Cloudflare tunnel..."
+            podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
+              --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
+            echo "✓ Cloudflare tunnel started"
+          else
+            echo "⚠️ Cloudflare tunnel not configured (token missing or placeholder)"
+          fi
           
           echo "✅ Production deployment complete!"
+          
+          echo ""
+          echo "Pod and container status:"
+          podman pod ps
+          podman ps --filter "pod=webserver-pod"
+          
+          echo ""
+          echo "🌐 Web server should be available at:"
+          echo "  - Local: http://localhost:8081"
+          if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
+            echo "  - Tailscale: http://[tailscale-ip]:8081"
+          fi
+          if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
+            echo "  - Cloudflare: https://[your-tunnel-domain]"
+          fi
