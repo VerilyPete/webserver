@@ -94,7 +94,7 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_PRIVATE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_PRIVATE_OAUTH_SECRET }}
-          tags: tag:github-actions
+          tags: tag:private-deploy
 
       - name: Setup SSH key
         if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
