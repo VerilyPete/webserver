@@ -92,8 +92,7 @@ jobs:
         if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
         uses: tailscale/github-action@v2
         with:
-          oauth-client-id: ${{ secrets.TS_PRIVATE_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_PRIVATE_OAUTH_SECRET }}
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:private-deploy
 
       - name: Setup SSH key
