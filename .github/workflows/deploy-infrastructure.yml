@@ -613,104 +613,52 @@ jobs:
           #!/bin/bash
           set -e
 
-          if [ -f ".env" ]; then
-            set -a && source .env && set +a
-          else
-            echo "ERROR: .env file not found" && exit 1
-          fi
+          # Load environment
+          [ -f ".env" ] && source .env || { echo "ERROR: .env file not found"; exit 1; }
 
-          # Debug: Echo the environment variable to verify it's loaded
-          echo "DEBUG: FORMSPREE_ENDPOINT is: $FORMSPREE_ENDPOINT"
+          # Setup
+          CONFIG_DIR="/home/opc/webserver/config"
+          mkdir -p "$CONFIG_DIR"
+          NGINX_CONFIG_FILE="$CONFIG_DIR/nginx.conf"
 
-          # Ensure the pod exists
-          echo "Ensuring webserver-pod exists..."
+          # Create pod and cleanup existing containers
           podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
-
-          # Stop and remove existing containers to avoid conflicts
           podman stop web-pod web tailscale cloudflared 2>/dev/null || true
           podman rm web-pod web tailscale cloudflared 2>/dev/null || true
 
-          # Pull latest web server image
-          echo "Pulling latest web server image..."
-          podman pull ghcr.io/verilypete/webserver:latest || {
-            echo "❌ Failed to pull web server image"
-            exit 1
-          }
-
-          # Create nginx configuration with proper Formspree endpoint
-          echo "Creating nginx configuration with Formspree endpoint..."
-
-          podman run --rm --name nginx-config-helper \
-            --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
+          # Pull image and generate config
+          podman pull ghcr.io/verilypete/webserver:latest
+          podman run --rm --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
             ghcr.io/verilypete/webserver:latest \
-            sh -c "sed 's|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g' /etc/nginx/nginx.conf" > /tmp/nginx-fixed.conf
-            chmod 644 /tmp/nginx-fixed.conf
-            sudo chown 0:0 /tmp/nginx-fixed.conf
+          sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$NGINX_CONFIG_FILE"
 
-          # Fix permissions
-          chmod 644 /tmp/nginx-fixed.conf
-
-          # Verify the file was created and contains the substitution
-          if [ -f /tmp/nginx-fixed.conf ]; then
-            echo "✓ Nginx config generated successfully"
-            echo "DEBUG: Checking if substitution worked..."
-            if grep -q "$FORMSPREE_ENDPOINT" /tmp/nginx-fixed.conf; then
-              echo "✓ Formspree endpoint substituted correctly"
-            else
-              echo "⚠️ Formspree endpoint may not have been substituted"
-              echo "First few lines of generated config:"
-              head -10 /tmp/nginx-fixed.conf
-            fi
-          else
-            echo "❌ Failed to generate nginx config"
-            exit 1
+          # Fix permissions and SELinux context so nginx can read the file
+          chmod 644 "$NGINX_CONFIG_FILE"
+          # Set SELinux context for container access (if SELinux is enabled)
+          if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+            chcon -Rt container_file_t "$NGINX_CONFIG_FILE" 2>/dev/null || true
           fi
 
-          # Start containers
+          # Start core containers
           podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
-
           podman run -d --name web --pod webserver-pod --restart unless-stopped \
-            --mount type=bind,source=/tmp/nginx-fixed.conf,target=/etc/nginx/nginx.conf,ro \
+            --mount type=bind,source="$NGINX_CONFIG_FILE",target=/etc/nginx/nginx.conf,ro \
             ghcr.io/verilypete/webserver:latest
 
-          # Start Tailscale if configured
-          if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-            echo "Starting Tailscale..."
+          # Start optional services
+          if [ -n "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
             podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
-              --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
-              --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
-              docker.io/tailscale/tailscale:latest
-            echo "✓ Tailscale started"
-          else
-            echo "⚠️ Tailscale not configured (key missing or placeholder)"
+          --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
+          --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
+          docker.io/tailscale/tailscale:latest
           fi
 
-          # Start Cloudflare tunnel if configured
-          if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
-            echo "Starting Cloudflare tunnel..."
+          if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
             podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
               --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
-            echo "✓ Cloudflare tunnel started"
-          else
-            echo "⚠️ Cloudflare tunnel not configured (token missing or placeholder)"
           fi
 
-          echo "✅ Web infrastructure started successfully"
-
-          echo ""
-          echo "Pod and container status:"
-          podman pod ps
-          podman ps --filter "pod=webserver-pod"
-
-          echo ""
-          echo "🌐 Web server should be available at:"
-          echo "  - Local: http://localhost:8081"
-          if [ ! -z "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-            echo "  - Tailscale: http://[tailscale-ip]:8081"
-          fi
-          if [ ! -z "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
-            echo "  - Cloudflare: https://[your-tunnel-domain]"
-          fi
+          echo "✅ Web server started on http://localhost:8081"
           START_EOF
           
           sudo chmod +x /usr/local/bin/start-web-pod.sh
