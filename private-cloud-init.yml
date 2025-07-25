@@ -10,7 +10,6 @@ packages:
  - wget
  - tmux
  - oci-utils
-
 write_files:
  - path: /etc/containers/registries.conf
    content: |
@@ -22,7 +21,6 @@ write_files:
      registries = []
    owner: root:root
    permissions: '0644'
-
  - path: /etc/containers/storage.conf
    content: |
      [storage]
@@ -36,7 +34,6 @@ write_files:
      size = "20G"
    owner: root:root
    permissions: '0644'
-
  - path: /etc/containers/containers.conf
    content: |
      [containers]
@@ -51,7 +48,6 @@ write_files:
      network_backend = "netavark"
    owner: root:root
    permissions: '0644'
-
  # System optimizations for container workloads
  - path: /etc/sysctl.d/99-podman-optimization.conf
    content: |
@@ -68,7 +64,6 @@ write_files:
      fs.inotify.max_user_watches=524288
    owner: root:root
    permissions: '0644'
-
  - path: /etc/systemd/journald.conf.d/podman.conf
    content: |
      [Journal]
@@ -81,11 +76,10 @@ write_files:
      MaxRetentionSec=1week
    owner: root:root
    permissions: '0644'
-
 runcmd:
  - sleep 10
  - dnf update -y --security --skip-broken || echo "Security update completed with warnings"
- - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user
+ - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /var/lib/tailscale-deploy
  - chown -R opc:opc /opt/app /home/opc/.config
  - |
    if [ -f /etc/sysctl.d/99-podman-optimization.conf ]; then
@@ -94,12 +88,23 @@ runcmd:
  - systemctl daemon-reload && systemctl restart systemd-journald || echo "Systemd reload completed with warnings"
  - firewall-cmd --permanent --add-port=8081/tcp || echo "Firewall port addition completed with warnings"
  - firewall-cmd --reload || echo "Firewall reload completed with warnings"
+ # Setup Tailscale for GitHub Actions deployment
+ - podman pull tailscale/tailscale:latest || echo "Tailscale image pull completed with warnings"
+ - |
+   podman run -d --name tailscale-deploy \
+     --privileged --network=host \
+     -v /var/lib/tailscale-deploy:/var/lib/tailscale \
+     tailscale/tailscale:latest \
+     tailscaled --state=/var/lib/tailscale/tailscaled.state || echo "Tailscale container start completed with warnings"
+ - sleep 5
+ - |
+   podman exec tailscale-deploy \
+     tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=deploy-target || echo "Tailscale connection completed with warnings"
  - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
  - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron || echo "Log truncation completed with warnings"
  - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
- - echo "Cloud-init setup completed successfully"
-
+ - echo "Cloud-init setup completed successfully - Tailscale ready for GitHub Actions"
 final_message: |
   Cloud-init setup completed successfully!
   All essential packages and configurations are installed.
-  GitHub Actions will handle the remaining deployment steps.
+  Tailscale is running and connected - ready for GitHub Actions deployment.

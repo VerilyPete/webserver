@@ -1,0 +1,375 @@
+# .github/workflows/deploy-custom-image.yml
+name: Deploy to Private Subnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_type:
+        description: 'Deployment type'
+        required: true
+        default: 'update'
+        type: choice
+        options:
+          - update
+          - fresh_deploy
+      hostname:
+        description: 'Custom hostname (optional)'
+        required: false
+        type: string
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate unique hostname
+        id: hostname
+        run: |
+          if [ -n "${{ github.event.inputs.hostname }}" ]; then
+            echo "hostname=${{ github.event.inputs.hostname }}" >> $GITHUB_OUTPUT
+          else
+            echo "hostname=webserver-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy new instance (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 15
+        id: create_instance
+        with:
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file private-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.PRIVATE_TAILSCALE_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
+          silent: false
+
+      - name: Find existing instance (update)
+        if: github.event.inputs.deploy_type == 'update'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 3
+        id: find_instance
+        continue-on-error: true
+        with:
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          query: 'data[?contains(\"display-name\", `webserver`)].{id: id, name: \"display-name\"} | [0]'
+          silent: false
+
+      - name: Check if instance was found
+        if: github.event.inputs.deploy_type == 'update'
+        id: check_instance
+        run: |
+          INSTANCE_DATA="${{ steps.find_instance.outputs.output }}"
+          if [ "$INSTANCE_DATA" = "null" ] || [ -z "$INSTANCE_DATA" ] || [ "$INSTANCE_DATA" = '""' ]; then
+            echo "No running instance found with 'webserver' in the name"
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "hostname=" >> $GITHUB_OUTPUT
+          else
+            # Extract hostname from instance name
+            INSTANCE_NAME=$(echo "$INSTANCE_DATA" | jq -r '.name // empty')
+            echo "Found instance: $INSTANCE_NAME"
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "hostname=$INSTANCE_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Parse instance ID (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        id: parse_instance_id
+        run: |
+          # Remove outer quotes and unescape the JSON string
+          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
+          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Setup Tailscale
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_PRIVATE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_PRIVATE_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Setup SSH key
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Wait for Tailscale connectivity (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        timeout-minutes: 10
+        run: |
+          TARGET_HOSTNAME="${{ steps.hostname.outputs.hostname }}"
+          echo "Waiting for Tailscale connectivity to $TARGET_HOSTNAME..."
+          
+          MAX_ATTEMPTS=30
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "echo 'Tailscale Ready'" 2>/dev/null; then
+              echo "✅ Tailscale connection successful to $TARGET_HOSTNAME (attempt $i)"
+              break
+            fi
+            if [ $i -eq $MAX_ATTEMPTS ]; then
+              echo "❌ Tailscale connection failed after maximum attempts"
+              echo "💡 Check Tailscale admin console and instance cloud-init logs"
+              exit 1
+            fi
+            echo "Tailscale attempt $i/$MAX_ATTEMPTS failed, waiting 20 seconds..."
+            sleep 20
+          done
+
+      - name: Setup infrastructure
+        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
+        timeout-minutes: 8
+        run: |
+          # Determine which hostname to use
+          if [ "${{ github.event.inputs.deploy_type }}" = "update" ]; then
+            TARGET_HOSTNAME="${{ steps.check_instance.outputs.hostname }}"
+            echo "Updating existing instance: $TARGET_HOSTNAME"
+          else
+            TARGET_HOSTNAME="${{ steps.hostname.outputs.hostname }}"
+            echo "Setting up fresh instance: $TARGET_HOSTNAME"
+          fi
+          
+          # Quick SSH connectivity check via Tailscale
+          echo "Checking Tailscale SSH access to $TARGET_HOSTNAME..."
+          SSH_READY=false
+          MAX_ATTEMPTS=6
+          
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "echo 'SSH Ready'" 2>/dev/null; then
+              echo "✅ SSH connection successful via Tailscale (attempt $i)"
+              SSH_READY=true
+              break
+            fi
+            if [ $i -eq $MAX_ATTEMPTS ]; then
+              echo "❌ SSH connection failed after maximum attempts"
+              exit 1
+            fi
+            echo "SSH attempt $i/$MAX_ATTEMPTS failed, waiting 10 seconds..."
+            sleep 10
+          done
+          
+          # Setup infrastructure
+          echo "Setting up infrastructure on $TARGET_HOSTNAME..."
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME << 'EOF'
+          set -e
+          
+          echo "Setting up system configuration..."
+          
+          # Enable user lingering and setup subuid/subgid
+          sudo loginctl enable-linger opc
+          if ! grep -q "^opc:" /etc/subuid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subuid; fi
+          if ! grep -q "^opc:" /etc/subgid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subgid; fi
+          
+          # Setup cron job for podman cleanup (if not already done)
+          if ! crontab -l 2>/dev/null | grep -q "podman-cleanup.sh"; then
+            (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
+          fi
+          
+          # Create cleanup script (if not exists)
+          if [ ! -f "/usr/local/bin/podman-cleanup.sh" ]; then
+            sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF'
+          #!/bin/bash
+          for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
+            if id "$user" &>/dev/null; then
+              sudo -u "$user" podman container prune -f 2>/dev/null || true
+              sudo -u "$user" podman image prune -af --filter "until=24h" 2>/dev/null || true
+              sudo -u "$user" podman volume prune -f 2>/dev/null || true
+              sudo -u "$user" podman system prune -af 2>/dev/null || true
+            fi
+          done
+          podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
+          buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
+          CLEANUP_EOF
+            sudo chmod +x /usr/local/bin/podman-cleanup.sh
+          fi
+          
+          echo "✅ System configuration complete"
+          
+          echo "Setting up container infrastructure..."
+          
+          # Clone/update repository
+          if [ ! -d "/home/opc/webserver" ]; then
+            git clone https://github.com/VerilyPete/webserver.git /home/opc/webserver
+          else
+            cd /home/opc/webserver && git pull origin main
+          fi
+
+          echo "Setting up environment variables..."
+          cd ~/webserver
+          
+          # Create .env file
+          cat > .env << 'ENV_EOF'
+          HOSTNAME=${{ steps.hostname.outputs.hostname }}
+          TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+          APP_PORT=8081
+          APP_ENV=production
+          ENV_EOF
+          
+          chmod 600 .env
+          
+          # Create systemd service files
+          mkdir -p ~/.config/systemd/user
+          
+          cat > ~/.config/systemd/user/webserver-pod.service << 'SERVICE_EOF'
+          [Unit]
+          Description=Web Infrastructure Pod
+          Wants=network-online.target
+          After=network-online.target
+          RequiresMountsFor=%t/containers
+          
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          Restart=on-failure
+          TimeoutStopSec=70
+          WorkingDirectory=%h/webserver
+          Environment=PODMAN_SYSTEMD_UNIT=%n
+          ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
+          ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
+          ExecStop=/usr/bin/podman pod stop webserver-pod
+          ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
+          
+          [Install]
+          WantedBy=default.target
+          SERVICE_EOF
+          
+          # Create start script
+          sudo tee /usr/local/bin/start-web-pod.sh > /dev/null << 'START_EOF'
+          #!/bin/bash
+          set -e
+
+          # Load environment
+          [ -f ".env" ] && source .env || { echo "ERROR: .env file not found"; exit 1; }
+
+          # Setup
+          CONFIG_DIR="/home/opc/webserver/config"
+          mkdir -p "$CONFIG_DIR"
+          NGINX_CONFIG_FILE="$CONFIG_DIR/nginx.conf"
+
+          # Create pod and cleanup existing containers
+          podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
+          podman stop web-pod web tailscale cloudflared 2>/dev/null || true
+          podman rm web-pod web tailscale cloudflared 2>/dev/null || true
+
+          # Pull image and generate config
+          podman pull ghcr.io/verilypete/webserver:latest
+          podman run --rm --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
+            ghcr.io/verilypete/webserver:latest \
+          sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$NGINX_CONFIG_FILE"
+
+          # Fix permissions and SELinux context so nginx can read the file
+          chmod 644 "$NGINX_CONFIG_FILE"
+          # Set SELinux context for container access (if SELinux is enabled)
+          if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+            chcon -Rt container_file_t "$NGINX_CONFIG_FILE" 2>/dev/null || true
+          fi
+
+          # Start core containers
+          podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
+          podman run -d --name web --pod webserver-pod --restart unless-stopped \
+            --mount type=bind,source="$NGINX_CONFIG_FILE",target=/etc/nginx/nginx.conf,ro \
+            --pull=always ghcr.io/verilypete/webserver:latest
+
+          # Start optional services
+          if [ -n "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
+            podman run -d --name tailscale --network=host --privileged --restart unless-stopped \
+          --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
+          --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
+          --pull=always docker.io/tailscale/tailscale:latest
+          fi
+
+          if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
+            podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
+              --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" --pull=always docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
+          fi
+
+          echo "✅ Web server started on http://localhost:8081"
+          START_EOF
+          
+          sudo chmod +x /usr/local/bin/start-web-pod.sh
+          
+          # Setup user systemd environment
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo systemctl start user@$(id -u).service
+          sleep 2
+          systemctl --user daemon-reload
+          systemctl --user enable webserver-pod.service
+          systemctl --user restart webserver-pod.service
+          
+          echo "✅ Infrastructure setup completed successfully"
+          EOF
+
+      - name: Handle no existing instance
+        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'false'
+        run: |
+          echo "❌ No running instance found with 'webserver' in the name"
+          echo "💡 Use 'fresh_deploy' to create a new instance"
+          exit 1
+
+      - name: Display new instance info (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
+          query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
+
+      - name: Verify deployment
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo ""
+          if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ]; then
+            echo "🆕 New instance created:"
+            echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
+            echo "   Tailscale Hostname: ${{ steps.hostname.outputs.hostname }}"
+          else
+            echo "🔄 Existing instance updated:"
+            echo "   Tailscale Hostname: ${{ steps.check_instance.outputs.hostname }}"
+          fi
+          echo ""
+          echo "🔍 Check your Tailscale admin console for the device"
+          echo "🌐 Web server accessible at http://${{ steps.hostname.outputs.hostname }}:8081 (via Tailscale)"
+          echo "📊 Monitor with: ssh opc@${{ steps.hostname.outputs.hostname }} 'podman pod ps && podman ps'"
+
+  cleanup-old-instances:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: deploy
+    if: github.event.inputs.deploy_type == 'fresh_deploy'
+    
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+      OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+    
+    steps:
+      - name: List old instances for manual cleanup
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 3
+        with:
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          query: 'data[?contains(\"display-name\", `webserver`)].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
+          silent: false
+
+      - name: Cleanup instructions
+        run: |
+          echo ""
+          echo "🧹 Old instances listed above may need cleanup"
+          echo "💡 To terminate old instances:"
+          echo "   Use the OCI Console or run:"
+          echo "   oci compute instance terminate --instance-id <INSTANCE_ID> --force"
