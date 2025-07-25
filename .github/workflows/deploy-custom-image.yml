@@ -39,7 +39,7 @@ jobs:
           if [ -n "${{ github.event.inputs.hostname }}" ]; then
             echo "hostname=${{ github.event.inputs.hostname }}" >> $GITHUB_OUTPUT
           else
-            echo "hostname=web-server-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+            echo "hostname=webserver-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
           fi
 
       - name: Deploy new instance (fresh deploy)
@@ -61,7 +61,7 @@ jobs:
         continue-on-error: true
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?contains(\"display-name\", `web-server`)].id | [0]'
+          query: 'data[?contains(\"display-name\", `webserver`)].id | [0]'
           silent: false
 
       - name: Check if instance was found
@@ -70,7 +70,7 @@ jobs:
         run: |
           INSTANCE_ID="${{ steps.find_instance.outputs.output }}"
           if [ "$INSTANCE_ID" = "null" ] || [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = '""' ]; then
-            echo "No running instance found with 'web-server' in the name"
+            echo "No running instance found with 'webserver' in the name"
             echo "found=false" >> $GITHUB_OUTPUT
             echo "instance_id=" >> $GITHUB_OUTPUT
           else
@@ -318,7 +318,7 @@ jobs:
       - name: Handle no existing instance
         if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'false'
         run: |
-          echo "❌ No running instance found with 'web-server' in the name"
+          echo "❌ No running instance found with 'webserver' in the name"
           echo "💡 Use 'fresh_deploy' to create a new instance"
           exit 1
 
@@ -373,7 +373,7 @@ jobs:
         timeout-minutes: 3
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?contains(\"display-name\", `web-server`)].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
+          query: 'data[?contains(\"display-name\", `webserver`)].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
           silent: false
 
       - name: Cleanup instructions
