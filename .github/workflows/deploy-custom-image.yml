@@ -105,7 +105,23 @@ jobs:
             PUBLIC_IP="${{ steps.get_instance_ip.outputs.output }}"
             echo "Updating existing instance at $PUBLIC_IP"
           else
-            PUBLIC_IP="${{ steps.get_new_ip.outputs.output }}"
+            # For fresh deployments, wait for IP to be available
+            echo "Waiting for instance IP to be available..."
+            INSTANCE_ID="${{ steps.parse_instance_id.outputs.instance_id }}"
+            MAX_IP_ATTEMPTS=10
+            for i in $(seq 1 $MAX_IP_ATTEMPTS); do
+              PUBLIC_IP=$(oci compute instance list-vnics --instance-id "$INSTANCE_ID" --query 'data[0]."public-ip"' --raw-output 2>/dev/null | tr -d '"')
+              if [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "null" ]; then
+                echo "✅ IP address obtained: $PUBLIC_IP (attempt $i)"
+                break
+              fi
+              if [ $i -eq $MAX_IP_ATTEMPTS ]; then
+                echo "❌ Failed to get IP address after $MAX_IP_ATTEMPTS attempts"
+                exit 1
+              fi
+              echo "IP attempt $i/$MAX_IP_ATTEMPTS failed, waiting 10 seconds..."
+              sleep 10
+            done
             echo "Setting up fresh instance at $PUBLIC_IP"
           fi
           
@@ -315,15 +331,7 @@ jobs:
           command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
           query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
-      - name: Get new instance IP (fresh deploy)
-        if: github.event.inputs.deploy_type == 'fresh_deploy'
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 3
-        id: get_new_ip
-        continue-on-error: true
-        with:
-          command: 'compute instance list-vnics --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
-          query: 'data[0].\"public-ip\"'
+
 
 
 
@@ -334,8 +342,8 @@ jobs:
           if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ]; then
             echo "🆕 New instance created:"
             echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
-            echo "   Public IP: ${{ steps.get_new_ip.outputs.output }}"
             echo "   Hostname: ${{ steps.hostname.outputs.hostname }}"
+            echo "   Note: IP address was retrieved during infrastructure setup"
           else
             echo "🔄 Existing instance updated:"
             echo "   Instance ID: ${{ steps.check_instance.outputs.instance_id }}"
