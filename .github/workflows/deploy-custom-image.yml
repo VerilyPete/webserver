@@ -288,7 +288,7 @@ jobs:
 
           # Start optional services
           if [ -n "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-            podman run -d --name tailscale --pod webserver-pod --privileged --restart unless-stopped \
+            podman run -d --name tailscale --network=host --privileged --restart unless-stopped \
           --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
           --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
           --pull=always docker.io/tailscale/tailscale:latest
