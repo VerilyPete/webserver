@@ -177,10 +177,10 @@ jobs:
           echo "Setting up container infrastructure..."
           
           # Clone/update repository
-          if [ ! -d "~/webserver" ]; then
-            git clone https://github.com/VerilyPete/webserver.git ~/webserver
+          if [ ! -d "/home/opc/webserver" ]; then
+            git clone https://github.com/VerilyPete/webserver.git /home/opc/webserver
           else
-            cd ~/webserver && git pull origin main && cd ~
+            cd /home/opc/webserver && git pull origin main
           fi
 
           echo "Setting up environment variables..."
