@@ -305,6 +305,7 @@ jobs:
             sleep 2
             systemctl --user daemon-reload
             systemctl --user enable webserver-pod.service
+            systemctl --user start webserver-pod.service
             
             echo "✅ Container infrastructure verified"
             
@@ -453,6 +454,21 @@ jobs:
           else
             cd ~/webserver && git pull && cd ~
           fi
+
+          echo "Setting up environment variables..."
+          cd ~/webserver
+          
+          # Create .env file
+          cat > .env << 'ENV_EOF'
+          HOSTNAME=${{ steps.hostname.outputs.hostname }}
+          TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
+          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+          APP_PORT=8081
+          APP_ENV=production
+          ENV_EOF
+          
+          chmod 600 .env
           
           # Create systemd service files
           mkdir -p ~/.config/systemd/user
@@ -465,9 +481,9 @@ jobs:
           RequiresMountsFor=%t/containers
           
           [Service]
-          Type=simple
+          Type=oneshot
+          RemainAfterExit=yes
           Restart=on-failure
-          RestartSec=10
           TimeoutStopSec=70
           WorkingDirectory=%h/webserver
           Environment=PODMAN_SYSTEMD_UNIT=%n
@@ -550,21 +566,6 @@ jobs:
           echo "Step 3: Deploying web infrastructure..."
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$PUBLIC_IP << 'WEB_INFRA_EOF'
           set -e
-          
-          echo "Setting up environment variables..."
-          cd ~/webserver
-          
-          # Create .env file
-          cat > .env << 'ENV_EOF'
-          HOSTNAME=${{ steps.hostname.outputs.hostname }}
-          TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-          FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
-          APP_PORT=8081
-          APP_ENV=production
-          ENV_EOF
-          
-          chmod 600 .env
           
           echo "✅ Web infrastructure deployed successfully!"
           WEB_INFRA_EOF
