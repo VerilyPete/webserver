@@ -10,6 +10,12 @@ packages:
  - wget
  - tmux
  - oci-utils
+
+# Add environment variable for Tailscale auth key
+# You'll need to set this when launching the instance
+environment:
+  TAILSCALE_AUTH_KEY: "${TAILSCALE_AUTH_KEY}"
+
 write_files:
  - path: /etc/containers/registries.conf
    content: |
@@ -47,7 +53,6 @@ write_files:
      network_backend = "netavark"
    owner: root:root
    permissions: '0644'
- # System optimizations for container workloads
  - path: /etc/sysctl.d/99-podman-optimization.conf
    content: |
      vm.swappiness=10
@@ -75,9 +80,29 @@ write_files:
      MaxRetentionSec=1week
    owner: root:root
    permissions: '0644'
+ # Add systemd service for Tailscale container management
+ - path: /etc/systemd/system/tailscale-deploy.service
+   content: |
+     [Unit]
+     Description=Tailscale Deploy Container
+     After=podman.service
+     Requires=podman.service
+     
+     [Service]
+     Type=forking
+     ExecStart=/usr/bin/podman run -d --name tailscale-deploy --privileged --network=host --restart=unless-stopped -v /var/lib/tailscale-deploy:/var/lib/tailscale tailscale/tailscale:latest tailscaled --state=/var/lib/tailscale/tailscaled.state
+     ExecStop=/usr/bin/podman stop tailscale-deploy
+     ExecStopPost=/usr/bin/podman rm tailscale-deploy
+     Restart=always
+     RestartSec=10
+     
+     [Install]
+     WantedBy=multi-user.target
+   owner: root:root
+   permissions: '0644'
+
 runcmd:
  - sleep 10
- - dnf update -y --security --skip-broken || echo "Security update completed with warnings"
  - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /var/lib/tailscale-deploy
  - chown -R opc:opc /opt/app /home/opc/.config
  - |
@@ -87,22 +112,65 @@ runcmd:
  - systemctl daemon-reload && systemctl restart systemd-journald || echo "Systemd reload completed with warnings"
  - firewall-cmd --permanent --add-port=8081/tcp || echo "Firewall port addition completed with warnings"
  - firewall-cmd --reload || echo "Firewall reload completed with warnings"
- # Setup Tailscale for GitHub Actions deployment
- - podman pull tailscale/tailscale:latest || echo "Tailscale image pull completed with warnings"
+ 
+ # Setup Tailscale with proper error handling and validation
+ - podman pull tailscale/tailscale:latest || (echo "Failed to pull Tailscale image" && exit 1)
+ 
+ # Validate auth key is present
+ - |
+   if [ -z "$TAILSCALE_AUTH_KEY" ]; then
+     echo "ERROR: TAILSCALE_AUTH_KEY environment variable is not set"
+     exit 1
+   fi
+ 
+ # Start Tailscale container with restart policy
  - |
    podman run -d --name tailscale-deploy \
      --privileged --network=host \
+     --restart=unless-stopped \
      -v /var/lib/tailscale-deploy:/var/lib/tailscale \
      tailscale/tailscale:latest \
-     tailscaled --state=/var/lib/tailscale/tailscaled.state || echo "Tailscale container start completed with warnings"
- - sleep 5
+     tailscaled --state=/var/lib/tailscale/tailscaled.state || (echo "Failed to start Tailscale container" && exit 1)
+ 
+ - sleep 10
+ 
+ # Connect to Tailscale with better error handling
  - |
-   podman exec tailscale-deploy \
-     tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=deploy-target || echo "Tailscale connection completed with warnings"
+   echo "Connecting to Tailscale..."
+   for i in {1..5}; do
+     if podman exec tailscale-deploy tailscale up --authkey="$TAILSCALE_AUTH_KEY" --hostname=deploy-target; then
+       echo "Successfully connected to Tailscale"
+       break
+     else
+       echo "Attempt $i failed, retrying in 10 seconds..."
+       sleep 10
+       if [ $i -eq 5 ]; then
+         echo "Failed to connect to Tailscale after 5 attempts"
+         exit 1
+       fi
+     fi
+   done
+ 
+ # Verify Tailscale connection
+ - |
+   echo "Verifying Tailscale connection..."
+   sleep 5
+   if podman exec tailscale-deploy tailscale status; then
+     echo "Tailscale is running and connected successfully"
+   else
+     echo "Tailscale connection verification failed"
+     exit 1
+   fi
+ 
+ # Enable systemd service for automatic restart
+ - systemctl enable tailscale-deploy.service || echo "Failed to enable Tailscale service"
+ 
+ # Cleanup
  - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
  - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron || echo "Log truncation completed with warnings"
  - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
  - echo "Cloud-init setup completed successfully - Tailscale ready for GitHub Actions"
+
 final_message: |
   Cloud-init setup completed successfully!
   All essential packages and configurations are installed.
