@@ -107,7 +107,7 @@ jobs:
         if: github.event.inputs.deploy_type == 'fresh_deploy'
         timeout-minutes: 10
         run: |
-          TARGET_HOSTNAME="${{ steps.hostname.outputs.hostname }}"
+          TARGET_HOSTNAME="tailscale-deploy"
           echo "Waiting for Tailscale connectivity to $TARGET_HOSTNAME..."
           
           MAX_ATTEMPTS=30

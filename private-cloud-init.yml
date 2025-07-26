@@ -99,7 +99,7 @@ runcmd:
       -v tailscale-data:/var/lib/tailscale:z \
       -v /dev/net/tun:/dev/net/tun \
       --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
-      --env TS_HOSTNAME="webserver-prod" \
+      --env TS_HOSTNAME="tailscale-deploy" \
       --env TS_STATE_DIR=/var/lib/tailscale \
       docker.io/tailscale/tailscale:latest
   - |
