@@ -110,12 +110,12 @@ runcmd:
       --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
       --env TS_HOSTNAME="deploy-target" \
       --env TS_STATE_DIR=/var/lib/tailscale \
-      tailscale/tailscale:latest
+      docker.io/tailscale/tailscale:latest
   - sleep 10
  
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
   - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron || echo "Log truncation completed with warnings"
-  - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
+#  - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
   - echo "Cloud-init setup completed successfully - Tailscale ready for GitHub Actions"
 
 final_message: |
