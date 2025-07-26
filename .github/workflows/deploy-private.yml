@@ -48,7 +48,7 @@ jobs:
         timeout-minutes: 15
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_SUBNET_ID }}" --user-data-file private-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.PRIVATE_TAILSCALE_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file private-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.PRIVATE_TAILSCALE_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
           silent: false
 
       - name: Find existing instance (update)
