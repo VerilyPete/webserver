@@ -87,7 +87,7 @@ runcmd:
   - systemctl daemon-reload && systemctl restart systemd-journald || echo "Systemd reload completed with warnings"
   - firewall-cmd --permanent --add-port=8081/tcp || echo "Firewall port addition completed with warnings"
   - firewall-cmd --reload || echo "Firewall reload completed with warnings"
-  - podman pull tailscale/tailscale:latest || (echo "Failed to pull Tailscale image" && exit 1)
+  - podman pull docker.io/tailscale/tailscale:latest || (echo "Failed to pull Tailscale image" && exit 1)
   - |
     echo "Retrieving Tailscale auth key from OCI metadata..."
     TAILSCALE_AUTH_KEY=$(curl -s -H "Authorization: Bearer Oracle" "http://169.254.169.254/opc/v2/instance/metadata/TAILSCALE_AUTH_KEY" 2>/dev/null)
@@ -105,12 +105,12 @@ runcmd:
       --privileged --network=host \
       --restart=unless-stopped \
       --cap-add=NET_ADMIN \
-      -v /var/lib/tailscale-deploy:/var/lib/tailscale \
+      -v tailscale-data:/var/lib/tailscale \
       -v /dev/net/tun:/dev/net/tun \
       --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
       --env TS_HOSTNAME="deploy-target" \
       --env TS_STATE_DIR=/var/lib/tailscale \
-      docker.io/tailscale/tailscale:latest
+      tailscale/tailscale:latest
   - sleep 10
  
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
