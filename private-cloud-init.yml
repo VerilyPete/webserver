@@ -75,25 +75,6 @@ write_files:
       MaxRetentionSec=1week
     owner: root:root
     permissions: '0644'
-  - path: /etc/systemd/system/tailscale-deploy.service
-    content: |
-      [Unit]
-      Description=Tailscale Deploy Container
-      After=podman.service
-      Requires=podman.service
-      
-      [Service]
-      Type=forking
-      ExecStart=/usr/bin/podman run -d --name tailscale-deploy --privileged --network=host --restart=unless-stopped --cap-add=NET_ADMIN --cap-add=SYS_MODULE -v /var/lib/tailscale-deploy:/var/lib/tailscale -v /dev/net/tun:/dev/net/tun tailscale/tailscale:latest tailscaled --state=/var/lib/tailscale/tailscaled.state --userspace-networking=false
-      ExecStop=/usr/bin/podman stop tailscale-deploy
-      ExecStopPost=/usr/bin/podman rm tailscale-deploy
-      Restart=always
-      RestartSec=10
-      
-      [Install]
-      WantedBy=multi-user.target
-    owner: root:root
-    permissions: '0644'
 
 runcmd:
   - sleep 10
@@ -124,37 +105,14 @@ runcmd:
       --privileged --network=host \
       --restart=unless-stopped \
       --cap-add=NET_ADMIN \
-      --cap-add=SYS_MODULE \
       -v /var/lib/tailscale-deploy:/var/lib/tailscale \
       -v /dev/net/tun:/dev/net/tun \
-      tailscale/tailscale:latest \
-      tailscaled --state=/var/lib/tailscale/tailscaled.state --userspace-networking=false || (echo "Failed to start Tailscale container" && exit 1)
+      --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
+      --env TS_HOSTNAME="deploy-target" \
+      --env TS_STATE_DIR=/var/lib/tailscale \
+      tailscale/tailscale:latest
   - sleep 10
-  - |
-    echo "Connecting to Tailscale..."
-    for i in {1..5}; do
-      if podman exec tailscale-deploy tailscale up --authkey="$TAILSCALE_AUTH_KEY" --hostname=deploy-target; then
-        echo "Successfully connected to Tailscale"
-        break
-      else
-        echo "Attempt $i failed, retrying in 10 seconds..."
-        sleep 10
-        if [ $i -eq 5 ]; then
-          echo "Failed to connect to Tailscale after 5 attempts"
-          exit 1
-        fi
-      fi
-    done
-  - |
-    echo "Verifying Tailscale connection..."
-    sleep 5
-    if podman exec tailscale-deploy tailscale status; then
-      echo "Tailscale is running and connected successfully"
-    else
-      echo "Tailscale connection verification failed"
-      exit 1
-    fi
-  - systemctl enable tailscale-deploy.service || echo "Failed to enable Tailscale service"
+ 
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
   - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron || echo "Log truncation completed with warnings"
   - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
