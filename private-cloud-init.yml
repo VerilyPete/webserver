@@ -31,7 +31,6 @@ write_files:
      additionalimagestores = []
      [storage.options.overlay]
      mountopt = "nodev,metacopy=on"
-     size = "20G"
    owner: root:root
    permissions: '0644'
  - path: /etc/containers/containers.conf
