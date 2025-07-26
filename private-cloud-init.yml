@@ -1,15 +1,6 @@
 #cloud-config
 package_update: false
 package_upgrade: false
-packages:
-  - podman
-  - buildah
-  - skopeo
-  - git
-  - curl
-  - wget
-  - tmux
-  - oci-utils
 
 write_files:
   - path: /etc/containers/registries.conf
@@ -78,7 +69,7 @@ write_files:
 
 runcmd:
   - sleep 10
-  - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user /var/lib/tailscale-deploy
+  - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
     if [ -f /etc/sysctl.d/99-podman-optimization.conf ]; then
@@ -105,7 +96,7 @@ runcmd:
       --privileged --network=host \
       --restart=unless-stopped \
       --cap-add=NET_ADMIN \
-      -v tailscale-data:/var/lib/tailscale \
+      -v tailscale-data:/var/lib/tailscale:z \
       -v /dev/net/tun:/dev/net/tun \
       --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
       --env TS_HOSTNAME="deploy-target" \
