@@ -84,7 +84,7 @@ write_files:
       
       [Service]
       Type=forking
-      ExecStart=/usr/bin/podman run -d --name tailscale-deploy --privileged --network=host --restart=unless-stopped -v /var/lib/tailscale-deploy:/var/lib/tailscale tailscale/tailscale:latest tailscaled --state=/var/lib/tailscale/tailscaled.state
+      ExecStart=/usr/bin/podman run -d --name tailscale-deploy --privileged --network=host --restart=unless-stopped --cap-add=NET_ADMIN --cap-add=SYS_MODULE -v /var/lib/tailscale-deploy:/var/lib/tailscale -v /dev/net/tun:/dev/net/tun tailscale/tailscale:latest tailscaled --state=/var/lib/tailscale/tailscaled.state --userspace-networking=false
       ExecStop=/usr/bin/podman stop tailscale-deploy
       ExecStopPost=/usr/bin/podman rm tailscale-deploy
       Restart=always
@@ -123,9 +123,12 @@ runcmd:
     podman run -d --name tailscale-deploy \
       --privileged --network=host \
       --restart=unless-stopped \
+      --cap-add=NET_ADMIN \
+      --cap-add=SYS_MODULE \
       -v /var/lib/tailscale-deploy:/var/lib/tailscale \
+      -v /dev/net/tun:/dev/net/tun \
       tailscale/tailscale:latest \
-      tailscaled --state=/var/lib/tailscale/tailscaled.state || (echo "Failed to start Tailscale container" && exit 1)
+      tailscaled --state=/var/lib/tailscale/tailscaled.state --userspace-networking=false || (echo "Failed to start Tailscale container" && exit 1)
   - sleep 10
   - |
     echo "Connecting to Tailscale..."
