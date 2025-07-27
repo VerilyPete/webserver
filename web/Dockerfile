@@ -22,7 +22,7 @@ RUN if [ ! -f /usr/share/nginx/html/src/index.html ]; then \
         echo '<h1>Containerized Web Server</h1><p>Website content will be here</p>' > /usr/share/nginx/html/src/index.html; \
     fi
 
-# Copy nginx configuration (will be processed by inject-secrets script before build)
+# Copy nginx configuration (Formspree endpoint will be injected from env variable at container runtime)
 COPY nginx.conf /etc/nginx/nginx.conf
 
 # Health check

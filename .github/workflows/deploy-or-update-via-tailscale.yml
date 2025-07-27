@@ -1,5 +1,9 @@
-# .github/workflows/deploy-custom-image.yml
-name: Deploy to Private Subnet
+# .github/workflows/deploy-or-update-via-tailscale.yml
+# This workflow is used to deploy a new instance to a private subnet without the use of a private runner
+# It deploys a new instance via OCI CLI if one does not exist, or updates an existing instance if one does exist
+# Cloud-init is used to bootstrap tailscale, at which point Github Actions takes over and finishes the deployment
+
+name: Deploy or Update via Tailscale
 
 on:
   workflow_dispatch:
@@ -48,7 +52,7 @@ jobs:
         timeout-minutes: 15
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file private-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.PRIVATE_TAILSCALE_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file tailscale-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.PRIVATE_TAILSCALE_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
           silent: false
 
       - name: Find existing instance (update)
