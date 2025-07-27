@@ -281,7 +281,7 @@ jobs:
           podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
           podman run -d --name web --pod webserver-pod --restart unless-stopped \
             --mount type=bind,source="$NGINX_CONFIG_FILE",target=/etc/nginx/nginx.conf,ro \
-            --pull=always ghcr.io/verilypete/webserver:latest
+            --pull=always ghcr.io/verilypete/webserver:main-111f3e3
 
           # Start optional services
 
