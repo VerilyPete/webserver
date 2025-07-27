@@ -203,7 +203,7 @@ jobs:
           if [ ! -d "/home/opc/webserver" ]; then
             git clone https://github.com/VerilyPete/webserver.git /home/opc/webserver
           else
-            cd /home/opc/webserver && git pull origin main
+            cd /home/opc/webserver && git fetch origin && git reset --hard origin/main
           fi
 
           echo "Setting up environment variables..."
