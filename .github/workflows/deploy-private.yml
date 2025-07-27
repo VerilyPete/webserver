@@ -164,8 +164,7 @@ jobs:
           
           echo "Setting up system configuration..."
           
-          # Enable user lingering and setup subuid/subgid
-          sudo loginctl enable-linger opc
+          # setup subuid/subgid
           if ! grep -q "^opc:" /etc/subuid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subuid; fi
           if ! grep -q "^opc:" /etc/subgid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subgid; fi
           
@@ -259,9 +258,8 @@ jobs:
 
           # Create pod and cleanup existing containers
           podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
-          podman stop web-pod web tailscale cloudflared 2>/dev/null || true
-          podman rm web-pod web tailscale cloudflared 2>/dev/null || true
-
+          podman stop web-pod web cloudflared 2>/dev/null || true
+          podman rm web-pod web cloudflared 2>/dev/null || true
           # Pull image and generate config
           podman pull ghcr.io/verilypete/webserver:latest
           podman run --rm --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
@@ -282,12 +280,6 @@ jobs:
             --pull=always ghcr.io/verilypete/webserver:latest
 
           # Start optional services
-          if [ -n "$TAILSCALE_AUTH_KEY" ] && [ "$TAILSCALE_AUTH_KEY" != "tskey-auth-xxxxxxxxx" ]; then
-            podman run -d --name tailscale --network=host --privileged --restart unless-stopped \
-          --volume tailscale-data:/var/lib/tailscale:z --volume /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
-          --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" --env TS_HOSTNAME="$HOSTNAME" --env TS_STATE_DIR=/var/lib/tailscale \
-          --pull=always docker.io/tailscale/tailscale:latest
-          fi
 
           if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
             podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \

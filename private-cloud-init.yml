@@ -6,7 +6,7 @@ write_files:
   - path: /etc/containers/registries.conf
     content: |
       [registries.search]
-      registries = ['docker.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.centos.org', 'quay.io', 'ghcr.io']
+      registries = ['docker.io', 'ghcr.io']
       [registries.insecure]
       registries = []
       [registries.block]
@@ -66,9 +66,40 @@ write_files:
       MaxRetentionSec=1week
     owner: root:root
     permissions: '0644'
+    # Create user systemd service instead
+  - path: /home/opc/.config/systemd/user/tailscale.service
+    content: |
+      [Unit]
+      Description=Tailscale VPN Container
+      Wants=network-online.target
+      After=network-online.target
+      
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=10
+      Environment=PODMAN_SYSTEMD_UNIT=%n
+      ExecStartPre=/usr/bin/podman pull docker.io/tailscale/tailscale:latest
+      ExecStartPre=-/usr/bin/podman stop tailscale
+      ExecStartPre=-/usr/bin/podman rm tailscale
+      ExecStart=/usr/bin/podman run --name tailscale \
+        --rm \
+        --privileged \
+        --network=host \
+        --cap-add=NET_ADMIN \
+        -v tailscale-data:/var/lib/tailscale:z \
+        -v /dev/net/tun:/dev/net/tun \
+        --env-file %h/.config/tailscale/tailscale.env \
+        docker.io/tailscale/tailscale:latest
+      ExecStop=/usr/bin/podman stop tailscale
+      
+      [Install]
+      WantedBy=default.target
+    owner: opc:opc
+    permissions: '0644'
 
 runcmd:
-  - sleep 10
+  - loginctl enable-linger opc
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
@@ -78,7 +109,6 @@ runcmd:
   - systemctl daemon-reload && systemctl restart systemd-journald || echo "Systemd reload completed with warnings"
   - firewall-cmd --permanent --add-port=8081/tcp || echo "Firewall port addition completed with warnings"
   - firewall-cmd --reload || echo "Firewall reload completed with warnings"
-  - podman pull docker.io/tailscale/tailscale:latest || (echo "Failed to pull Tailscale image" && exit 1)
   - |
     echo "Retrieving Tailscale auth key from OCI metadata..."
     TAILSCALE_AUTH_KEY=$(curl -s -H "Authorization: Bearer Oracle" "http://169.254.169.254/opc/v2/instance/metadata/TAILSCALE_AUTH_KEY" 2>/dev/null)
@@ -91,24 +121,33 @@ runcmd:
     
     echo "Successfully retrieved Tailscale auth key from metadata"
     export TAILSCALE_AUTH_KEY
-  - |
-    podman run -d --name tailscale-deploy \
-      --privileged --network=host \
-      --restart=unless-stopped \
-      --cap-add=NET_ADMIN \
-      -v tailscale-data:/var/lib/tailscale:z \
-      -v /dev/net/tun:/dev/net/tun \
-      --env TS_AUTHKEY="$TAILSCALE_AUTH_KEY" \
-      --env TS_HOSTNAME="webserver-prod" \
-      --env TS_STATE_DIR=/var/lib/tailscale \
-      docker.io/tailscale/tailscale:latest
-  - |
-  - sleep 10
- 
+    # Create environment file as opc user
+    su - opc << EOF
+    mkdir -p ~/.config/tailscale
+    
+    # Create the environment file with the auth key
+    cat > ~/.config/tailscale/tailscale.env << 'ENVFILE'
+    TS_AUTHKEY=$TAILSCALE_AUTH_KEY
+    TS_HOSTNAME=$HOSTNAME
+    TS_STATE_DIR=/var/lib/tailscale
+    TS_ACCEPT_RISK=accept
+    ENVFILE
+    
+    chmod 600 ~/.config/tailscale/tailscale.env
+    
+    # Start the service
+    export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+    systemctl --user daemon-reload
+    systemctl --user enable tailscale.service
+    systemctl --user start tailscale.service
+    
+    # Wait and check status
+    sleep 5
+    systemctl --user status tailscale.service
+    EOF 
   - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
   - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron || echo "Log truncation completed with warnings"
 #  - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
-  - echo "Cloud-init setup completed successfully - Tailscale ready for GitHub Actions"
 
 final_message: |
   Cloud-init setup completed successfully!
