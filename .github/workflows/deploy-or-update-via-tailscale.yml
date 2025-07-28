@@ -21,8 +21,9 @@ on:
         required: true
         type: choice
         options:
-          - webserver-prod
           - webserver-staging
+          - webserver-prod
+
 
 env:
   OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
