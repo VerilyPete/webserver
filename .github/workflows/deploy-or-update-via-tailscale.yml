@@ -329,23 +329,7 @@ jobs:
           
           sudo chmod +x /usr/local/bin/start-web-pod.sh
 
-          # Verify Tailscale service is still running (required for connectivity)
-          echo "Verifying Tailscale service status..."
-          if ! systemctl --user is-active --quiet tailscale.service; then
-            echo "❌ Tailscale service is not running. Attempting to restart..."
-            systemctl --user restart tailscale.service
-            sleep 5
-            if ! systemctl --user is-active --quiet tailscale.service; then
-              echo "❌ Failed to restart Tailscale service"
-              systemctl --user status tailscale.service --no-pager -l
-              exit 1
-            fi
-          else
-            echo "✅ Tailscale service is running"
-          fi
-          
-          # Start the service with better error handling
-          echo "Starting webserver systemd service..."
+          # Start the service
           systemctl --user enable webserver-pod.service
           systemctl --user restart webserver-pod.service
           
