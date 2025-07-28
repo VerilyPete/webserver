@@ -4,9 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Dockerfile'
-      - 'nginx.conf'
-      - 'src/**'
+      - 'web/**'
       - '.github/workflows/build-and-push.yml'
   workflow_dispatch:
   # Add repository_dispatch trigger
@@ -41,6 +39,7 @@ jobs:
             echo "Message: ${{ github.event.client_payload.commit_message }}"
           else
             echo "🔨 Build triggered by infrastructure repository"
+          fi
           
       # Add QEMU for cross-platform builds
       - name: Set up QEMU
