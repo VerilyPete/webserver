@@ -99,7 +99,7 @@ write_files:
     permissions: '0644'
 
 runcmd:
-  - loginctl enable-linger "$(whoami)"
+  - loginctl enable-linger opc
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
