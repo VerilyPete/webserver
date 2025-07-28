@@ -17,9 +17,12 @@ on:
           - update
           - fresh_deploy
       hostname:
-        description: 'Custom hostname (optional)'
-        required: false
-        type: string
+        description: 'Target hostname'
+        required: true
+        type: choice
+        options:
+          - webserver-prod
+          - webserver-staging
 
 env:
   OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
@@ -37,13 +40,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate unique hostname
+      - name: Set hostname
         id: hostname
         run: |
-          if [ -n "${{ github.event.inputs.hostname }}" ]; then
-            echo "hostname=${{ github.event.inputs.hostname }}" >> $GITHUB_OUTPUT
+          echo "hostname=${{ github.event.inputs.hostname }}" >> $GITHUB_OUTPUT
+
+      - name: Terminate existing instance (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 5
+        continue-on-error: true
+        id: find_existing_instance
+        with:
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          query: 'data[?\"display-name\" == `${{ github.event.inputs.hostname }}`].{id: id, name: \"display-name\"} | [0]'
+          silent: false
+
+      - name: Terminate existing instance if found
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        id: terminate_existing
+        run: |
+          INSTANCE_DATA="${{ steps.find_existing_instance.outputs.output }}"
+          if [ "$INSTANCE_DATA" != "null" ] && [ -n "$INSTANCE_DATA" ] && [ "$INSTANCE_DATA" != '""' ]; then
+            INSTANCE_ID=$(echo "$INSTANCE_DATA" | jq -r '.id // empty')
+            if [ -n "$INSTANCE_ID" ]; then
+              echo "Found existing instance $INSTANCE_ID, terminating..."
+              oci compute instance terminate --instance-id "$INSTANCE_ID" --force --wait-for-state TERMINATED
+              echo "✅ Existing instance terminated"
+            fi
           else
-            echo "hostname=webserver-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+            echo "No existing instance found with name ${{ github.event.inputs.hostname }}"
           fi
 
       - name: Deploy new instance (fresh deploy)
@@ -52,36 +78,8 @@ jobs:
         timeout-minutes: 15
         id: create_instance
         with:
-          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file tailscale-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.PRIVATE_TAILSCALE_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file tailscale-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
           silent: false
-
-      - name: Find existing instance (update)
-        if: github.event.inputs.deploy_type == 'update'
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        timeout-minutes: 3
-        id: find_instance
-        continue-on-error: true
-        with:
-          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?contains(\"display-name\", `webserver`)].{id: id, name: \"display-name\"} | [0]'
-          silent: false
-
-      - name: Check if instance was found
-        if: github.event.inputs.deploy_type == 'update'
-        id: check_instance
-        run: |
-          INSTANCE_DATA="${{ steps.find_instance.outputs.output }}"
-          if [ "$INSTANCE_DATA" = "null" ] || [ -z "$INSTANCE_DATA" ] || [ "$INSTANCE_DATA" = '""' ]; then
-            echo "No running instance found with 'webserver' in the name"
-            echo "found=false" >> $GITHUB_OUTPUT
-            echo "hostname=" >> $GITHUB_OUTPUT
-          else
-            # Extract hostname from instance name
-            INSTANCE_NAME=$(echo "$INSTANCE_DATA" | jq -r '.name // empty')
-            echo "Found instance: $INSTANCE_NAME"
-            echo "found=true" >> $GITHUB_OUTPUT
-            echo "hostname=$INSTANCE_NAME" >> $GITHUB_OUTPUT
-          fi
 
       - name: Parse instance ID (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
@@ -93,14 +91,14 @@ jobs:
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
 
       - name: Setup Tailscale
-        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:private-deploy
 
       - name: Setup SSH key
-        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
@@ -130,16 +128,20 @@ jobs:
           done
 
       - name: Setup infrastructure
-        if: (github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'true') || github.event.inputs.deploy_type == 'fresh_deploy'
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
         timeout-minutes: 8
         run: |
-          # Determine which hostname to use
-          if [ "${{ github.event.inputs.deploy_type }}" = "update" ]; then
-            TARGET_HOSTNAME="${{ steps.check_instance.outputs.hostname }}"
-            echo "Updating existing instance: $TARGET_HOSTNAME"
+          # Use the selected hostname
+          TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
+          echo "Target instance: $TARGET_HOSTNAME"
+          
+          # Determine Cloudflare tunnel token based on hostname
+          if [ "$TARGET_HOSTNAME" = "webserver-prod" ]; then
+            CLOUDFLARE_TOKEN="${{ secrets.CLOUDFLARE_PROD_TUNNEL_TOKEN }}"
+            echo "Using production Cloudflare tunnel token"
           else
-            TARGET_HOSTNAME="${{ steps.hostname.outputs.hostname }}"
-            echo "Setting up fresh instance: $TARGET_HOSTNAME"
+            CLOUDFLARE_TOKEN="${{ secrets.CLOUDFLARE_STAGING_TUNNEL_TOKEN }}"
+            echo "Using staging Cloudflare tunnel token"
           fi
           
           # Quick SSH connectivity check via Tailscale
@@ -163,7 +165,7 @@ jobs:
           
           # Setup infrastructure
           echo "Setting up infrastructure on $TARGET_HOSTNAME..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME << 'EOF'
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME << EOF
           set -e
           
           echo "Setting up system configuration..."
@@ -210,10 +212,10 @@ jobs:
           cd ~/webserver
           
           # Create .env file
-          cat > .env << 'ENV_EOF'
-          HOSTNAME=${{ steps.hostname.outputs.hostname }}
+          cat > .env << ENV_EOF
+          HOSTNAME=${{ github.event.inputs.hostname }}
           TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-          CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TOKEN
           FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
           APP_PORT=8081
           APP_ENV=production
@@ -306,12 +308,7 @@ jobs:
           echo "✅ Infrastructure setup completed successfully"
           EOF
 
-      - name: Handle no existing instance
-        if: github.event.inputs.deploy_type == 'update' && steps.check_instance.outputs.found == 'false'
-        run: |
-          echo "❌ No running instance found with 'webserver' in the name"
-          echo "💡 Use 'fresh_deploy' to create a new instance"
-          exit 1
+
 
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
@@ -329,15 +326,15 @@ jobs:
           if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ]; then
             echo "🆕 New instance created:"
             echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
-            echo "   Tailscale Hostname: ${{ steps.hostname.outputs.hostname }}"
+            echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"
           else
             echo "🔄 Existing instance updated:"
-            echo "   Tailscale Hostname: ${{ steps.check_instance.outputs.hostname }}"
+            echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"
           fi
           echo ""
           echo "🔍 Check your Tailscale admin console for the device"
-          echo "🌐 Web server accessible at http://${{ steps.hostname.outputs.hostname }}:8081 (via Tailscale)"
-          echo "📊 Monitor with: ssh opc@${{ steps.hostname.outputs.hostname }} 'podman pod ps && podman ps'"
+          echo "🌐 Web server accessible at http://${{ github.event.inputs.hostname }}:8081 (via Tailscale)"
+          echo "📊 Monitor with: ssh opc@${{ github.event.inputs.hostname }} 'podman pod ps && podman ps'"
 
   cleanup-old-instances:
     runs-on: ubuntu-latest
@@ -358,7 +355,7 @@ jobs:
         timeout-minutes: 3
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?contains(\"display-name\", `webserver`)].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
+          query: 'data[?contains(\"display-name\", `webserver`) && \"display-name\" != `${{ github.event.inputs.hostname }}`].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
           silent: false
 
       - name: Cleanup instructions

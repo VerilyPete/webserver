@@ -1,0 +1,16 @@
+feat: refactor deployment workflow for production/staging environments
+
+- Replace optional custom hostname with required choice between webserver-prod/webserver-staging
+- Remove instance discovery logic since target hostname is now known upfront
+- Add automatic termination of existing instances before fresh deployment
+- Implement dynamic Cloudflare tunnel token selection based on environment:
+  * webserver-prod → CLOUDFLARE_PROD_TUNNEL_TOKEN
+  * webserver-staging → CLOUDFLARE_STAGING_TUNNEL_TOKEN
+- Simplify conditional logic throughout workflow by removing instance search steps
+- Update cleanup job to exclude current instance from old instance listing
+- Fix SSH heredoc to allow variable expansion for dynamic token injection
+- Improve workflow reliability and predictability for multi-environment deployments
+
+This change makes the deployment process more deterministic and suitable
+for managing both production and staging environments with clear separation
+of concerns and configuration. 
