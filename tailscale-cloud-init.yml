@@ -99,7 +99,7 @@ write_files:
     permissions: '0644'
 
 runcmd:
-  - loginctl enable-linger opc
+  - loginctl enable-linger "$(whoami)"
   - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user
   - chown -R opc:opc /opt/app /home/opc/.config
   - |
@@ -151,5 +151,4 @@ runcmd:
 
 final_message: |
   Cloud-init setup completed successfully!
-  All essential packages and configurations are installed.
   Tailscale is running and connected - ready for GitHub Actions deployment.

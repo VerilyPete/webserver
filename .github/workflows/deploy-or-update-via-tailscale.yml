@@ -296,19 +296,13 @@ jobs:
           START_EOF
           
           sudo chmod +x /usr/local/bin/start-web-pod.sh
-          
-          # Setup user systemd environment
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          sudo systemctl start user@$(id -u).service
-          sleep 2
-          systemctl --user daemon-reload
+
+          # Start the service
           systemctl --user enable webserver-pod.service
           systemctl --user restart webserver-pod.service
           
           echo "✅ Infrastructure setup completed successfully"
           EOF
-
-
 
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
