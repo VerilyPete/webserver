@@ -46,7 +46,7 @@ jobs:
         run: |
           echo "hostname=${{ github.event.inputs.hostname }}" >> $GITHUB_OUTPUT
 
-      - name: Terminate existing instance (fresh deploy)
+      - name: Fresh deploy - Check for existing instance & terminate if found
         if: github.event.inputs.deploy_type == 'fresh_deploy'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         timeout-minutes: 5
@@ -91,20 +91,19 @@ jobs:
           INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
 
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
       - name: Setup Tailscale
         if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:private-deploy
-
-      - name: Setup SSH key
-        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          chmod 700 ~/.ssh
 
       - name: Wait for Tailscale connectivity (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
@@ -150,6 +149,13 @@ jobs:
           SSH_READY=false
           MAX_ATTEMPTS=6
           
+          # Ensure XDG_RUNTIME_DIR is set for user systemd services
+          export XDG_RUNTIME_DIR="/run/user/$(ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "id -u" 2>/dev/null)"
+          if [ -z "$XDG_RUNTIME_DIR" ] || [ "$XDG_RUNTIME_DIR" = "/run/user/" ]; then
+            echo "⚠️  Could not determine XDG_RUNTIME_DIR, using default"
+            export XDG_RUNTIME_DIR="/run/user/1000"
+          fi
+          
           for i in $(seq 1 $MAX_ATTEMPTS); do
             if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "echo 'SSH Ready'" 2>/dev/null; then
               echo "✅ SSH connection successful via Tailscale (attempt $i)"
@@ -179,6 +185,10 @@ jobs:
           if ! crontab -l 2>/dev/null | grep -q "podman-cleanup.sh"; then
             (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
           fi
+          
+          # Ensure user systemd service is enabled and running (already done in cloud-init)
+          # Just verify the user systemd is working
+          systemctl --user daemon-reload
           
           # Create cleanup script (if not exists)
           if [ ! -f "/usr/local/bin/podman-cleanup.sh" ]; then
@@ -238,11 +248,11 @@ jobs:
           Type=oneshot
           RemainAfterExit=yes
           Restart=on-failure
+          RestartSec=10
           TimeoutStopSec=70
           WorkingDirectory=%h/webserver
           Environment=PODMAN_SYSTEMD_UNIT=%n
-          ExecStartPre=/usr/bin/podman pod create --name webserver-pod --publish 8081:8081 --replace
-          ExecStart=/usr/bin/bash -c 'cd %h/webserver && /usr/local/bin/start-web-pod.sh'
+          ExecStart=/usr/local/bin/start-web-pod.sh
           ExecStop=/usr/bin/podman pod stop webserver-pod
           ExecStopPost=/usr/bin/podman pod rm -f webserver-pod
           
@@ -255,19 +265,39 @@ jobs:
           #!/bin/bash
           set -e
 
-          # Load environment
-          [ -f ".env" ] && source .env || { echo "ERROR: .env file not found"; exit 1; }
+          # Ensure we're in the right directory
+          cd /home/opc/webserver || { echo "ERROR: Cannot change to /home/opc/webserver"; exit 1; }
+
+          # Load environment with better error handling
+          if [ ! -f ".env" ]; then
+            echo "ERROR: .env file not found in $(pwd)"
+            exit 1
+          fi
+          source .env
 
           # Setup
           CONFIG_DIR="/home/opc/webserver/config"
           mkdir -p "$CONFIG_DIR"
           NGINX_CONFIG_FILE="$CONFIG_DIR/nginx.conf"
 
-          # Create pod and cleanup existing containers
+          echo "Starting web infrastructure setup..."
+
+          # Create pod and cleanup existing containers (but don't touch tailscale)
+          echo "Creating pod and cleaning up existing containers..."
           podman pod create --name webserver-pod --publish 8081:8081 --replace 2>/dev/null || true
           podman stop web-pod web cloudflared 2>/dev/null || true
           podman rm web-pod web cloudflared 2>/dev/null || true
+          
+          # Verify tailscale container is still running
+          if ! podman ps --format "{{.Names}}" | grep -q "^tailscale$"; then
+            echo "❌ Tailscale container is not running. This will break connectivity!"
+            exit 1
+          else
+            echo "✅ Tailscale container is running"
+          fi
+
           # Pull image and generate config
+          echo "Pulling latest image and generating nginx config..."
           podman pull ghcr.io/verilypete/webserver:latest
           podman run --rm --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
             ghcr.io/verilypete/webserver:latest \
@@ -281,14 +311,15 @@ jobs:
           fi
 
           # Start core containers
+          echo "Starting core containers..."
           podman run -d --name web-pod --pod webserver-pod --restart unless-stopped k8s.gcr.io/pause:3.9
           podman run -d --name web --pod webserver-pod --restart unless-stopped \
             --mount type=bind,source="$NGINX_CONFIG_FILE",target=/etc/nginx/nginx.conf,ro \
             --pull=always ghcr.io/verilypete/webserver:main-111f3e3
 
           # Start optional services
-
           if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
+            echo "Starting Cloudflare tunnel..."
             podman run -d --name cloudflared --pod webserver-pod --restart unless-stopped \
               --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" --pull=always docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
           fi
@@ -298,9 +329,36 @@ jobs:
           
           sudo chmod +x /usr/local/bin/start-web-pod.sh
 
-          # Start the service
+          # Verify Tailscale service is still running (required for connectivity)
+          echo "Verifying Tailscale service status..."
+          if ! systemctl --user is-active --quiet tailscale.service; then
+            echo "❌ Tailscale service is not running. Attempting to restart..."
+            systemctl --user restart tailscale.service
+            sleep 5
+            if ! systemctl --user is-active --quiet tailscale.service; then
+              echo "❌ Failed to restart Tailscale service"
+              systemctl --user status tailscale.service --no-pager -l
+              exit 1
+            fi
+          else
+            echo "✅ Tailscale service is running"
+          fi
+          
+          # Start the service with better error handling
+          echo "Starting webserver systemd service..."
           systemctl --user enable webserver-pod.service
           systemctl --user restart webserver-pod.service
+          
+          # Wait a moment and check service status
+          sleep 5
+          if systemctl --user is-active --quiet webserver-pod.service; then
+            echo "✅ Service started successfully"
+          else
+            echo "❌ Service failed to start. Checking logs..."
+            systemctl --user status webserver-pod.service --no-pager -l
+            journalctl --user -u webserver-pod.service --no-pager -l --since "1 minute ago"
+            exit 1
+          fi
           
           echo "✅ Infrastructure setup completed successfully"
           EOF
