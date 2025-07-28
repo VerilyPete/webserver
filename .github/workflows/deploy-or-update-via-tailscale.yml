@@ -331,9 +331,8 @@ jobs:
 
           # Start the service
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          sudo systemctl start user@$(id -u).service
           sleep 2
-          sudo systemctl --user daemon-reload
+          systemctl --user daemon-reload
           systemctl --user enable webserver-pod.service
           systemctl --user restart webserver-pod.service
           
