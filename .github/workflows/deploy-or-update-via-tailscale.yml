@@ -85,7 +85,7 @@ jobs:
                   echo "Found Tailscale device ID: $DEVICE_ID"
                   
                   # Delete the machine from TailNet
-                  DELETE_RESPONSE=$(curl -s -X DELETE \
+                  DELETE_RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
                     -H "Authorization: Bearer $TAILSCALE_API_KEY" \
                     "https://api.tailscale.com/api/v2/device/$DEVICE_ID")
 
