@@ -78,7 +78,7 @@ jobs:
               
               if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
                 DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
-                jq -r '.devices[] | select(.name == "$HOSTNAME") | .id // empty')
+                jq -r --arg hostname "HOSTNAME" '.devices[] | select(.name == $hostname) | .id // empty')
                 
                 if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
                   echo "Found Tailscale device ID: $DEVICE_ID"
@@ -99,7 +99,7 @@ jobs:
                 fi
               else
                 echo "⚠️  Failed to query Tailscale API for machine '$HOSTNAME' (will continue with instance termination)"
-                echo "Query response: $MACHINE_RESPONSE"
+                echo "Query response: $DEVICE_RESPONSE"
               fi
               
               # Then terminate the OCI instance
