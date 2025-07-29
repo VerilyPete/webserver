@@ -172,7 +172,7 @@ jobs:
           
           # Setup infrastructure
           echo "Setting up infrastructure on $TARGET_HOSTNAME..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME << 'EOF'
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME << EOF
           set -e
           
           echo "Setting up system configuration..."
@@ -226,7 +226,7 @@ jobs:
           cat > .env << ENV_EOF
           HOSTNAME=${{ github.event.inputs.hostname }}
           TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-          CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TOKEN
+          CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TOKEN}
           FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
           APP_PORT=8081
           APP_ENV=production
