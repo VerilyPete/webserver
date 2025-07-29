@@ -79,7 +79,7 @@ jobs:
               
               if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
                 DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
-                jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
+                  jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
                 
                 if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
                   echo "Found Tailscale device ID: $DEVICE_ID"
@@ -100,7 +100,7 @@ jobs:
                     echo "⚠️ Unauthorized - check your API key"
                   else
                     echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)"
-                  
+                  fi
                   if [ $? -eq 0 ]; then
                     echo "✅ Machine '$HOSTNAME' removed from TailNet"
                   else
