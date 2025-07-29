@@ -172,7 +172,7 @@ jobs:
           
           # Setup infrastructure
           echo "Setting up infrastructure on $TARGET_HOSTNAME..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME << EOF
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME CLOUDFLARE_TOKEN="$CLOUDFLARE_TOKEN" << 'EOF'
           set -e
           
           echo "Setting up system configuration..."
