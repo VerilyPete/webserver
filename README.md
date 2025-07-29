@@ -231,9 +231,9 @@ APP_ENV=production
 
 ### Deployment Timeline
 
-- **Fresh Deploy**: 10-15 minutes
-- **Update**: 5-10 minutes
-- **Build Time**: 3-5 minutes (parallel)
+- **Fresh Deploy**: ~5 minutes
+- **Update**: ~3 minutes
+- **Build Time**: <3 minutes (parallel)
 
 ## 🐳 Container Architecture
 
