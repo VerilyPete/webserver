@@ -99,6 +99,14 @@ jobs:
                   else
                     echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)"
                   fi
+                else
+                  echo "⚠️ Machine '$HOSTNAME' not found in TailNet (may have been already removed)"
+                fi
+              else
+                echo "⚠️ Failed to query Tailscale API for machine '$HOSTNAME' (will continue with instance termination)"
+                echo "Query response: $DEVICE_RESPONSE"
+              fi
+              
               # Then terminate the OCI instance
               echo "Terminating OCI instance $INSTANCE_ID..."
               oci compute instance terminate --instance-id "$INSTANCE_ID" --force --wait-for-state TERMINATED
