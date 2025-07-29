@@ -170,10 +170,13 @@ jobs:
             sleep 10
           done
           
-          # Setup infrastructure
+          # Setup infrastructure with better error handling
           echo "Setting up infrastructure on $TARGET_HOSTNAME..."
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 opc@$TARGET_HOSTNAME CLOUDFLARE_TOKEN="$CLOUDFLARE_TOKEN" << 'EOF'
-          set -e
+          
+          # Create a script file to execute remotely for better error handling
+          cat > /tmp/setup_script.sh << 'SETUP_EOF'
+          #!/bin/bash
+          set -euo pipefail  # Strict error handling
           
           echo "Setting up system configuration..."
           
@@ -212,27 +215,51 @@ jobs:
           
           echo "Setting up container infrastructure..."
           
-          # Clone/update repository
+          # Clone/update repository with explicit error checking
           if [ ! -d "/home/opc/webserver" ]; then
-            git clone https://github.com/VerilyPete/webserver.git /home/opc/webserver
+            echo "Cloning repository..."
+            if ! git clone https://github.com/VerilyPete/webserver.git /home/opc/webserver; then
+              echo "❌ ERROR: Failed to clone repository"
+              exit 1
+            fi
+            echo "✅ Repository cloned successfully"
           else
-            cd /home/opc/webserver && git pull origin main
+            echo "Updating existing repository..."
+            if ! (cd /home/opc/webserver && git pull origin main); then
+              echo "❌ ERROR: Failed to update repository"
+              exit 1
+            fi
+            echo "✅ Repository updated successfully"
+          fi
+          
+          # Verify directory exists
+          if [ ! -d "/home/opc/webserver" ]; then
+            echo "❌ ERROR: webserver directory does not exist after clone/update"
+            exit 1
           fi
 
           echo "Setting up environment variables..."
-          cd ~/webserver
+          cd ~/webserver || { echo "❌ ERROR: Cannot change to webserver directory"; exit 1; }
           
           # Create .env file
           cat > .env << ENV_EOF
-          HOSTNAME=${{ github.event.inputs.hostname }}
-          TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}
-          CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TOKEN}
-          FORMSPREE_ENDPOINT=${{ secrets.FORMSPREE_ENDPOINT }}
+          HOSTNAME=$1
+          TAILSCALE_AUTH_KEY=$2
+          CLOUDFLARE_TUNNEL_TOKEN=$3
+          FORMSPREE_ENDPOINT=$4
           APP_PORT=8081
           APP_ENV=production
           ENV_EOF
           
           chmod 600 .env
+          
+          # Verify .env file was created
+          if [ ! -f ".env" ]; then
+            echo "❌ ERROR: .env file was not created"
+            exit 1
+          fi
+          
+          echo "✅ Environment file created successfully"
           
           # Create systemd service files
           mkdir -p ~/.config/systemd/user
@@ -348,7 +375,60 @@ jobs:
           fi
           
           echo "✅ Infrastructure setup completed successfully"
-          EOF
+          SETUP_EOF
+          
+          # Copy script to remote host and execute it
+          scp -o StrictHostKeyChecking=no /tmp/setup_script.sh opc@$TARGET_HOSTNAME:/tmp/
+          
+          # Execute the script with parameters and capture exit code
+          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "chmod +x /tmp/setup_script.sh && /tmp/setup_script.sh '${{ github.event.inputs.hostname }}' '${{ secrets.TAILSCALE_AUTH_KEY }}' '$CLOUDFLARE_TOKEN' '${{ secrets.FORMSPREE_ENDPOINT }}'"; then
+            echo "✅ Infrastructure setup completed successfully"
+          else
+            echo "❌ Infrastructure setup failed"
+            exit 1
+          fi
+          
+          # Clean up the script
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "rm -f /tmp/setup_script.sh"
+
+      - name: Verify deployment status
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
+        timeout-minutes: 3
+        run: |
+          TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
+          echo "Verifying deployment on $TARGET_HOSTNAME..."
+          
+          # Check if webserver directory exists
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "[ -d '/home/opc/webserver' ]"; then
+            echo "❌ ERROR: webserver directory does not exist"
+            exit 1
+          fi
+          echo "✅ webserver directory exists"
+          
+          # Check if .env file exists
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "[ -f '/home/opc/webserver/.env' ]"; then
+            echo "❌ ERROR: .env file does not exist"
+            exit 1
+          fi
+          echo "✅ .env file exists"
+          
+          # Check if containers are running
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "systemctl --user is-active --quiet webserver-pod.service"; then
+            echo "❌ ERROR: webserver-pod service is not running"
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "systemctl --user status webserver-pod.service --no-pager -l"
+            exit 1
+          fi
+          echo "✅ webserver-pod service is running"
+          
+          # Check if web server is responding
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "curl -f http://localhost:8081 >/dev/null 2>&1"; then
+            echo "❌ ERROR: Web server is not responding on port 8081"
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "podman pod ps && podman ps"
+            exit 1
+          fi
+          echo "✅ Web server is responding on port 8081"
+          
+          echo "🎉 All verification checks passed"
 
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
@@ -359,7 +439,7 @@ jobs:
           command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
           query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
-      - name: Verify deployment
+      - name: Final deployment summary
         run: |
           echo "✅ Deployment completed successfully!"
           echo ""
