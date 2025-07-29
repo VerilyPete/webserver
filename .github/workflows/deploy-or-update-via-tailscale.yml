@@ -78,7 +78,7 @@ jobs:
               
               if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
                 DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
-                jq '.devices[] | select(.name | contains("webserver-staging")) | {id, name, authorized}')
+                jq -r '.devices[] | select(.name == "$HOSTNAME") | .id // empty')
                 
                 if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
                   echo "Found Tailscale device ID: $DEVICE_ID"
