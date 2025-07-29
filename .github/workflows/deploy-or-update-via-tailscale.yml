@@ -79,7 +79,7 @@ jobs:
               
               if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
                 DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
-                jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.name | contains($hostname)) | .id // empty')
+                jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
                 
                 if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
                   echo "Found Tailscale device ID: $DEVICE_ID"
@@ -87,9 +87,19 @@ jobs:
                   # Delete the machine from TailNet
                   DELETE_RESPONSE=$(curl -s -X DELETE \
                     -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                    "https://api.tailscale.com/api/v2/tailnet/-/devices/$DEVICE_ID")
+                    "https://api.tailscale.com/api/v2/device/$DEVICE_ID")
 
                   echo "I made this delete response: $DELETE_RESPONSE"
+                  echo "Delete HTTP status: $DELETE_RESPONSE"
+
+                  if [[ "$DELETE_RESPONSE" =~ ^2[0-9][0-9]$ ]]; then
+                    echo "✅ Machine '$HOSTNAME' removed from TailNet"
+                  elif [[ "$DELETE_RESPONSE" == "404" ]]; then
+                    echo "⚠️ Device not found (may have been already deleted)"
+                  elif [[ "$DELETE_RESPONSE" == "401" ]]; then
+                    echo "⚠️ Unauthorized - check your API key"
+                  else
+                    echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)"
                   
                   if [ $? -eq 0 ]; then
                     echo "✅ Machine '$HOSTNAME' removed from TailNet"
