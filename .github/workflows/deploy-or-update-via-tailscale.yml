@@ -179,23 +179,61 @@ jobs:
           set -euo pipefail  # Strict error handling
           
           echo "Setting up system configuration..."
+          echo "Current user: $(whoami)"
+          echo "Current directory: $(pwd)"
+          echo "Home directory: $HOME"
           
-          # setup subuid/subgid
-          if ! grep -q "^opc:" /etc/subuid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subuid; fi
-          if ! grep -q "^opc:" /etc/subgid 2>/dev/null; then echo "opc:100000:65536" | sudo tee -a /etc/subgid; fi
+          # Check basic system state
+          echo "Checking system state..."
+          echo "Disk space:"
+          df -h / || echo "df command failed"
+          echo "Memory:"
+          free -h || echo "free command failed"
+          
+          # setup subuid/subgid with detailed logging
+          echo "Setting up subuid/subgid..."
+          if ! grep -q "^opc:" /etc/subuid 2>/dev/null; then
+            echo "Adding opc to /etc/subuid..."
+            echo "opc:100000:65536" | sudo tee -a /etc/subuid || { echo "❌ Failed to add to subuid"; exit 1; }
+          else
+            echo "opc already exists in /etc/subuid"
+          fi
+          
+          if ! grep -q "^opc:" /etc/subgid 2>/dev/null; then
+            echo "Adding opc to /etc/subgid..."
+            echo "opc:100000:65536" | sudo tee -a /etc/subgid || { echo "❌ Failed to add to subgid"; exit 1; }
+          else
+            echo "opc already exists in /etc/subgid"
+          fi
           
           # Setup cron job for podman cleanup (if not already done)
+          echo "Setting up cron job for podman cleanup..."
           if ! crontab -l 2>/dev/null | grep -q "podman-cleanup.sh"; then
-            (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab -
+            echo "Adding podman cleanup cron job..."
+            (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab - || { echo "❌ Failed to setup cron job"; exit 1; }
+          else
+            echo "Podman cleanup cron job already exists"
           fi
           
           # Ensure user systemd service is enabled and running (already done in cloud-init)
           # Just verify the user systemd is working
-          systemctl --user daemon-reload
+          echo "Checking user systemd..."
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR set to: $XDG_RUNTIME_DIR"
+          
+          if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+            echo "Creating XDG_RUNTIME_DIR: $XDG_RUNTIME_DIR"
+            sudo mkdir -p "$XDG_RUNTIME_DIR" || { echo "❌ Failed to create XDG_RUNTIME_DIR"; exit 1; }
+            sudo chown $(id -u):$(id -g) "$XDG_RUNTIME_DIR" || { echo "❌ Failed to chown XDG_RUNTIME_DIR"; exit 1; }
+          fi
+          
+          systemctl --user daemon-reload || { echo "❌ Failed to reload user systemd"; exit 1; }
           
           # Create cleanup script (if not exists)
+          echo "Creating cleanup script..."
           if [ ! -f "/usr/local/bin/podman-cleanup.sh" ]; then
-            sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF'
+            echo "Creating /usr/local/bin/podman-cleanup.sh..."
+            sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF' || { echo "❌ Failed to create cleanup script"; exit 1; }
           #!/bin/bash
           for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
             if id "$user" &>/dev/null; then
@@ -208,7 +246,10 @@ jobs:
           podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
           buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
           CLEANUP_EOF
-            sudo chmod +x /usr/local/bin/podman-cleanup.sh
+            sudo chmod +x /usr/local/bin/podman-cleanup.sh || { echo "❌ Failed to make cleanup script executable"; exit 1; }
+            echo "✅ Cleanup script created successfully"
+          else
+            echo "Cleanup script already exists"
           fi
           
           echo "✅ System configuration complete"
@@ -381,10 +422,14 @@ jobs:
           scp -o StrictHostKeyChecking=no /tmp/setup_script.sh opc@$TARGET_HOSTNAME:/tmp/
           
           # Execute the script with parameters and capture exit code
-          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "chmod +x /tmp/setup_script.sh && /tmp/setup_script.sh '${{ github.event.inputs.hostname }}' '${{ secrets.TAILSCALE_AUTH_KEY }}' '$CLOUDFLARE_TOKEN' '${{ secrets.FORMSPREE_ENDPOINT }}'"; then
+          echo "Executing setup script on $TARGET_HOSTNAME..."
+          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "chmod +x /tmp/setup_script.sh && bash -x /tmp/setup_script.sh '${{ github.event.inputs.hostname }}' '${{ secrets.TAILSCALE_AUTH_KEY }}' '$CLOUDFLARE_TOKEN' '${{ secrets.FORMSPREE_ENDPOINT }}' 2>&1"; then
             echo "✅ Infrastructure setup completed successfully"
           else
-            echo "❌ Infrastructure setup failed"
+            SCRIPT_EXIT_CODE=$?
+            echo "❌ Infrastructure setup failed with exit code: $SCRIPT_EXIT_CODE"
+            echo "Attempting to retrieve any error logs..."
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "echo 'Last 50 lines of journalctl:'; sudo journalctl -n 50 --no-pager || true; echo 'Cloud-init logs:'; sudo tail -50 /var/log/cloud-init-output.log 2>/dev/null || echo 'No cloud-init-output.log'; sudo tail -50 /var/log/cloud-init.log 2>/dev/null || echo 'No cloud-init.log'" || true
             exit 1
           fi
           
