@@ -73,19 +73,20 @@ jobs:
               echo "Removing machine '$HOSTNAME' from TailNet..."
               
               # Get the machine ID from Tailscale API
-              MACHINE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                "https://api.tailscale.com/api/v2/machines?name=$HOSTNAME")
+              DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/tailnet/-/devices")
               
-              if [ $? -eq 0 ] && [ -n "$MACHINE_RESPONSE" ]; then
-                MACHINE_ID=$(echo "$MACHINE_RESPONSE" | jq -r '.machines[0].id // empty')
+              if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
+                DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
+                jq '.devices[] | select(.name | contains("webserver-staging")) | {id, name, authorized}')
                 
-                if [ -n "$MACHINE_ID" ] && [ "$MACHINE_ID" != "null" ]; then
-                  echo "Found Tailscale machine ID: $MACHINE_ID"
+                if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
+                  echo "Found Tailscale device ID: $DEVICE_ID"
                   
                   # Delete the machine from TailNet
                   DELETE_RESPONSE=$(curl -s -X DELETE \
                     -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                    "https://api.tailscale.com/api/v2/machines/$MACHINE_ID")
+                    "https://api.tailscale.com/api/v2/tailnet/-/devices/$DEVICE_ID")
                   
                   if [ $? -eq 0 ]; then
                     echo "✅ Machine '$HOSTNAME' removed from TailNet"
