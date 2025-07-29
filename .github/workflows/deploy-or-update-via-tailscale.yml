@@ -73,8 +73,9 @@ jobs:
               echo "Removing machine '$HOSTNAME' from TailNet..."
               
               # Get the machine ID from Tailscale API
-              DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+              DEVICE_RESPONSE=$(curl -H "Authorization: Bearer $TAILSCALE_API_KEY" \
                 "https://api.tailscale.com/api/v2/tailnet/-/devices")
+              echo "I made this device response: $DEVICE_RESPONSE"
               
               if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
                 DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
@@ -82,9 +83,9 @@ jobs:
                 
                 if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
                   echo "Found Tailscale device ID: $DEVICE_ID"
-                  
+                  echo "I made this delete response: $DELETE_RESPONSE"
                   # Delete the machine from TailNet
-                  DELETE_RESPONSE=$(curl -s -X DELETE \
+                  DELETE_RESPONSE=$(curl -X DELETE \
                     -H "Authorization: Bearer $TAILSCALE_API_KEY" \
                     "https://api.tailscale.com/api/v2/tailnet/-/devices/$DEVICE_ID")
                   
