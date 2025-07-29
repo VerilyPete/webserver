@@ -31,6 +31,7 @@ env:
   OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
   OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
   OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+  TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
 
 jobs:
   deploy:
@@ -66,6 +67,42 @@ jobs:
             INSTANCE_ID=$(echo "$INSTANCE_DATA" | jq -r '.id // empty')
             if [ -n "$INSTANCE_ID" ]; then
               echo "Found existing instance $INSTANCE_ID, terminating..."
+              
+              # First, remove the machine from TailNet using Tailscale API
+              HOSTNAME="${{ github.event.inputs.hostname }}"
+              echo "Removing machine '$HOSTNAME' from TailNet..."
+              
+              # Get the machine ID from Tailscale API
+              MACHINE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/machines?name=$HOSTNAME")
+              
+              if [ $? -eq 0 ] && [ -n "$MACHINE_RESPONSE" ]; then
+                MACHINE_ID=$(echo "$MACHINE_RESPONSE" | jq -r '.machines[0].id // empty')
+                
+                if [ -n "$MACHINE_ID" ] && [ "$MACHINE_ID" != "null" ]; then
+                  echo "Found Tailscale machine ID: $MACHINE_ID"
+                  
+                  # Delete the machine from TailNet
+                  DELETE_RESPONSE=$(curl -s -X DELETE \
+                    -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                    "https://api.tailscale.com/api/v2/machines/$MACHINE_ID")
+                  
+                  if [ $? -eq 0 ]; then
+                    echo "✅ Machine '$HOSTNAME' removed from TailNet"
+                  else
+                    echo "⚠️  Failed to remove machine from TailNet (will continue with instance termination)"
+                    echo "Delete response: $DELETE_RESPONSE"
+                  fi
+                else
+                  echo "⚠️  Machine '$HOSTNAME' not found in TailNet (may have been already removed)"
+                fi
+              else
+                echo "⚠️  Failed to query Tailscale API for machine '$HOSTNAME' (will continue with instance termination)"
+                echo "Query response: $MACHINE_RESPONSE"
+              fi
+              
+              # Then terminate the OCI instance
+              echo "Terminating OCI instance $INSTANCE_ID..."
               oci compute instance terminate --instance-id "$INSTANCE_ID" --force --wait-for-state TERMINATED
               echo "✅ Existing instance terminated"
             fi
