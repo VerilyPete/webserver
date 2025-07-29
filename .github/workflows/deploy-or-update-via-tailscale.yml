@@ -75,24 +75,22 @@ jobs:
               # Get the machine ID from Tailscale API
               DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
                 "https://api.tailscale.com/api/v2/tailnet/-/devices")
-              echo "I made this device response: $DEVICE_RESPONSE"
               
               if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
-                DEVICE_ID=$(echo "$DEVICE_RESPONSE" | \
+                nodeId=$(echo "$DEVICE_RESPONSE" | \
                   jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
                 
-                if [ -n "$DEVICE_ID" ] && [ "$DEVICE_ID" != "null" ]; then
-                  echo "Found Tailscale device ID: $DEVICE_ID"
+                if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
+                  echo "Found Tailscale nodeId: $nodeId"
                   
                   # Delete the machine from TailNet
                   DELETE_RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
                     -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                    "https://api.tailscale.com/api/v2/device/$DEVICE_ID")
+                    "https://api.tailscale.com/api/v2/device/$nodeId")
 
-                  echo "I made this delete response: $DELETE_RESPONSE"
                   echo "Delete HTTP status: $DELETE_RESPONSE"
 
-                  if [[ "$DELETE_RESPONSE" =~ ^2[0-9][0-9]$ ]]; then
+                  if [[ "$DELETE_RESPONSE" == *"200" ]] || [[ "$DELETE_RESPONSE" == *"204" ]]; then
                     echo "✅ Machine '$HOSTNAME' removed from TailNet"
                   elif [[ "$DELETE_RESPONSE" == "404" ]]; then
                     echo "⚠️ Device not found (may have been already deleted)"
@@ -101,20 +99,6 @@ jobs:
                   else
                     echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)"
                   fi
-                  if [ $? -eq 0 ]; then
-                    echo "✅ Machine '$HOSTNAME' removed from TailNet"
-                  else
-                    echo "⚠️  Failed to remove machine from TailNet (will continue with instance termination)"
-                    echo "Delete response: $DELETE_RESPONSE"
-                  fi
-                else
-                  echo "⚠️  Machine '$HOSTNAME' not found in TailNet (may have been already removed)"
-                fi
-              else
-                echo "⚠️  Failed to query Tailscale API for machine '$HOSTNAME' (will continue with instance termination)"
-                echo "Query response: $DEVICE_RESPONSE"
-              fi
-              
               # Then terminate the OCI instance
               echo "Terminating OCI instance $INSTANCE_ID..."
               oci compute instance terminate --instance-id "$INSTANCE_ID" --force --wait-for-state TERMINATED
