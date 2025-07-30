@@ -72,34 +72,30 @@ jobs:
               HOSTNAME="${{ github.event.inputs.hostname }}"
               echo "Removing machine '$HOSTNAME' from TailNet..."
               
-              # Get the machine ID from Tailscale API
+              # Get device info from Tailscale API
               DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
                 "https://api.tailscale.com/api/v2/tailnet/-/devices")
+
+              # Extract nodeId if device exists
+              nodeId=$(echo "$DEVICE_RESPONSE" | \
+                jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
+
+              if [ -z "$nodeId" ] || [ "$nodeId" = "null" ]; then
+                echo "⚠️ Machine '$HOSTNAME' not found in TailNet (may have been already removed)"
+              else
+                echo "Found Tailscale nodeId: $nodeId"
+  
+              # Delete the machine from TailNet
+              DELETE_RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/device/$nodeId")
               
-              if [ $? -eq 0 ] && [ -n "$DEVICE_RESPONSE" ]; then
-                nodeId=$(echo "$DEVICE_RESPONSE" | \
-                  jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
-                
-                if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
-                  echo "Found Tailscale nodeId: $nodeId"
-                  
-                  # Delete the machine from TailNet
-                  DELETE_RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
-                    -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                    "https://api.tailscale.com/api/v2/device/$nodeId")
-
-                  echo "Delete HTTP status: $DELETE_RESPONSE"
-
-                  if [[ "$DELETE_RESPONSE" == *"200" ]] || [[ "$DELETE_RESPONSE" == *"204" ]]; then
-                    echo "✅ Machine '$HOSTNAME' removed from TailNet"
-                  elif [[ "$DELETE_RESPONSE" == "404" ]]; then
-                    echo "⚠️ Device not found (may have been already deleted)"
-                  elif [[ "$DELETE_RESPONSE" == "401" ]]; then
-                    echo "⚠️ Unauthorized - check your API key"
-                  else
-                    echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)"
-                  fi
-                fi
+              case "$DELETE_RESPONSE" in
+                *200|*204) echo "✅ Machine '$HOSTNAME' removed from TailNet" ;;
+                *401) echo "⚠️ Unauthorized - check your API key" ;;
+                *404) echo "⚠️ Device not found (may have been already deleted)" ;;
+                *) echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)" ;;
+              esac
               fi
               
               # Then terminate the OCI instance
