@@ -1,4 +1,4 @@
-name: Build and Push Webserver Image
+name: Simple Build and Push
 on:
   push:
     branches: [ main ]
