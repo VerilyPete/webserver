@@ -575,21 +575,6 @@ A: Verify Tailscale connectivity, check container status, and ensure the web ser
 **Q: How do I scale this infrastructure?**
 A: Deploy multiple instances behind a load balancer or use OCI's auto-scaling features.
 
-## 📝 Changelog
-
-### [Unreleased]
-- Initial release
-- Basic containerized web server infrastructure
-- Tailscale VPN integration
-- GitHub Actions CI/CD pipeline
-- Multi-environment support
-
-### [v1.0.0] - 2024-01-01
-- Initial stable release
-- Complete documentation
-- Production-ready deployment process
-
-
 ## 🤝 Support
 
 - **Issues**: [GitHub Issues](https://github.com/VerilyPete/webserver/issues)
