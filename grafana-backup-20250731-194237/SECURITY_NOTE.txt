@@ -1,0 +1,5 @@
+SECURITY NOTE:
+- User accounts and password hashes were NOT backed up for security
+- After restore, use default admin/admin123 credentials
+- Change the admin password after restore
+- Recreate any additional users manually
