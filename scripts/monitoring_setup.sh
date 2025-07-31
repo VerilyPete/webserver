@@ -43,7 +43,7 @@ scrape_configs:
       - targets: ['node-exporter:9100']
     scrape_interval: 10s
 
-  # Container metrics  
+  # Container metrics
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8080']
@@ -91,7 +91,7 @@ if curl -s http://localhost:8080/nginx_status >/dev/null 2>&1; then
 {
   "dashboard": {
     "id": null,
-    "title": "nginx Overview", 
+    "title": "nginx Overview",
     "tags": ["nginx"],
     "timezone": "UTC",
     "panels": [
@@ -105,7 +105,7 @@ if curl -s http://localhost:8080/nginx_status >/dev/null 2>&1; then
       },
       {
         "id": 2,
-        "title": "Active Connections", 
+        "title": "Active Connections",
         "type": "stat",
         "targets": [{"expr": "nginx_connections_active{instance=\"host.containers.internal:9113\"}", "refId": "A"}],
         "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
@@ -113,7 +113,7 @@ if curl -s http://localhost:8080/nginx_status >/dev/null 2>&1; then
       {
         "id": 3,
         "title": "Requests per Second",
-        "type": "timeseries", 
+        "type": "timeseries",
         "targets": [{"expr": "irate(nginx_http_requests_total{instance=\"host.containers.internal:9113\"}[5m])", "refId": "A"}],
         "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
       }
@@ -171,7 +171,7 @@ ExecStart=/usr/bin/podman run --rm --name prometheus \\
   -v "${PROMETHEUS_CONFIG}:/etc/prometheus/prometheus.yml:ro,Z" \\
   -v prometheus-data:/prometheus \\
   --network monitoring \\
-  prom/prometheus:latest \\
+  docker.io/prom/prometheus:latest \\
   --config.file=/etc/prometheus/prometheus.yml \\
   --storage.tsdb.path=/prometheus \\
   --storage.tsdb.retention.time=30d \\
@@ -273,7 +273,7 @@ podman run -d --name node-exporter \
   -v /sys:/host/sys:ro \
   -v /:/rootfs:ro \
   --network monitoring \
-  prom/node-exporter:latest \
+  docker.io/prom/node-exporter:latest \
   --path.procfs=/host/proc \
   --path.rootfs=/rootfs \
   --path.sysfs=/host/sys \
@@ -303,7 +303,7 @@ podman run -d --name cadvisor \
 
 if [ $? -eq 0 ]; then
     echo "✅ cAdvisor started on port 8888"
-    CADVISOR_OK=true  
+    CADVISOR_OK=true
 else
     echo "❌ cAdvisor failed"
     CADVISOR_OK=false
@@ -316,18 +316,18 @@ echo "=== Step 7: Add nginx monitoring ==="
 echo "Checking for nginx status endpoint..."
 if curl -s http://localhost:8080/nginx_status >/dev/null; then
     echo "✅ nginx status endpoint found"
-    
+
     # Connect web container to monitoring network
     podman network connect monitoring web 2>/dev/null || echo "Web container connection may have failed or already connected"
-    
+
     # Start nginx-prometheus-exporter
     podman run -d --name nginx-exporter \
       --restart unless-stopped \
       -p 9113:9113 \
       --network monitoring \
-      nginx/nginx-prometheus-exporter:latest \
+      docker.io/nginx/nginx-prometheus-exporter:latest \
       -nginx.scrape-uri=http://web:8080/nginx_status
-    
+
     if [ $? -eq 0 ]; then
         echo "✅ nginx-exporter started"
         NGINX_EXPORTER_OK=true
@@ -358,10 +358,10 @@ BACKUP_DIR=$(ls -d grafana-backup-* 2>/dev/null | head -1)
 if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
     echo "Found Grafana backup: $BACKUP_DIR"
     echo "Waiting for Grafana to be fully ready..."
-    
+
     # Wait longer for Grafana to be completely ready
     sleep 20
-    
+
     # Check if restore script exists and run it
     if [ -f "$BACKUP_DIR/restore-dashboards.sh" ]; then
         echo "Running dashboard restore..."
@@ -374,7 +374,7 @@ if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
     fi
 else
     echo "ℹ️  No Grafana backup found - will import default nginx dashboard"
-    
+
     # Wait for Grafana to be ready
     echo "Waiting for Grafana to be ready for dashboard import..."
     for i in {1..30}; do
@@ -384,35 +384,35 @@ else
         echo "Waiting... ($i/30)"
         sleep 2
     done
-    
+
     if [ "$NGINX_EXPORTER_OK" = true ]; then
         echo "Importing and fixing nginx dashboard..."
-        
+
         # Download the nginx dashboard JSON
         curl -s "https://grafana.com/api/dashboards/12708/revisions/1/download" > /tmp/nginx-dashboard.json
-        
+
         if [ -f /tmp/nginx-dashboard.json ]; then
             # Fix the template variables for our setup
             sed -i 's/"query": "label_values(nginx_up, instance)"/"query": "host.containers.internal:9113"/' /tmp/nginx-dashboard.json
             sed -i 's/"regex": ".*"/"regex": "host.containers.internal:9113"/' /tmp/nginx-dashboard.json
             sed -i 's/"multi": true/"multi": false/' /tmp/nginx-dashboard.json
             sed -i 's/"includeAll": true/"includeAll": false/' /tmp/nginx-dashboard.json
-            
+
             # Also fix any hardcoded $instance references that might cause issues
             sed -i 's/\$instance/host.containers.internal:9113/g' /tmp/nginx-dashboard.json
-            
+
             # Import the fixed dashboard
             echo "Importing fixed nginx dashboard..."
             curl -s -u admin:admin123 -H "Content-Type: application/json" \
                 -d @/tmp/nginx-dashboard.json \
                 "http://localhost:3000/api/dashboards/db" >/dev/null
-            
+
             if [ $? -eq 0 ]; then
                 echo "✅ nginx dashboard imported and fixed"
             else
                 echo "⚠️  Dashboard import may have failed"
             fi
-            
+
             rm -f /tmp/nginx-dashboard.json
         else
             echo "⚠️  Could not download nginx dashboard"
