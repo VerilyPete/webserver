@@ -1,0 +1,154 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+
+write_files:
+  - path: /etc/containers/registries.conf
+    content: |
+      [registries.search]
+      registries = ['docker.io', 'ghcr.io']
+      [registries.insecure]
+      registries = []
+      [registries.block]
+      registries = []
+    owner: root:root
+    permissions: '0644'
+  - path: /etc/containers/storage.conf
+    content: |
+      [storage]
+      driver = "overlay"
+      runroot = "/run/containers/storage"
+      graphroot = "/var/lib/containers/storage"
+      [storage.options]
+      additionalimagestores = []
+      [storage.options.overlay]
+      mountopt = "nodev,metacopy=on"
+    owner: root:root
+    permissions: '0644'
+  - path: /etc/containers/containers.conf
+    content: |
+      [containers]
+      log_driver = "journald"
+      log_size_max = -1
+      pids_limit = 2048
+      [engine]
+      cgroup_manager = "systemd"
+      events_logger = "journald"
+      runtime = "crun"
+      [network]
+      network_backend = "netavark"
+    owner: root:root
+    permissions: '0644'
+  - path: /etc/sysctl.d/99-podman-optimization.conf
+    content: |
+      vm.swappiness=10
+      vm.dirty_ratio=15
+      vm.dirty_background_ratio=5
+      vm.max_map_count=262144
+      net.core.rmem_max=16777216
+      net.core.wmem_max=16777216
+      net.ipv4.tcp_rmem=4096 87380 16777216
+      net.ipv4.tcp_wmem=4096 65536 16777216
+      net.ipv4.tcp_congestion_control=bbr
+      fs.file-max=65536
+      fs.inotify.max_user_watches=524288
+    owner: root:root
+    permissions: '0644'
+  - path: /etc/systemd/journald.conf.d/podman.conf
+    content: |
+      [Journal]
+      SystemMaxUse=500M
+      SystemKeepFree=1G
+      SystemMaxFileSize=100M
+      RuntimeMaxUse=200M
+      RuntimeKeepFree=500M
+      RuntimeMaxFileSize=50M
+      MaxRetentionSec=1week
+    owner: root:root
+    permissions: '0644'
+    # Create user systemd service instead
+  - path: /home/opc/.config/systemd/user/tailscale.service
+    content: |
+      [Unit]
+      Description=Tailscale VPN Container
+      Wants=network-online.target
+      After=network-online.target
+      
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=10
+      Environment=PODMAN_SYSTEMD_UNIT=%n
+      ExecStartPre=/usr/bin/podman pull docker.io/tailscale/tailscale:latest
+      ExecStartPre=-/usr/bin/podman stop tailscale
+      ExecStartPre=-/usr/bin/podman rm tailscale
+      ExecStart=/usr/bin/podman run --name tailscale \
+        --rm \
+        --privileged \
+        --network=host \
+        --cap-add=NET_ADMIN \
+        -v tailscale-data:/var/lib/tailscale:z \
+        -v /dev/net/tun:/dev/net/tun \
+        --env-file %h/.config/tailscale/tailscale.env \
+        docker.io/tailscale/tailscale:latest
+      ExecStop=/usr/bin/podman stop tailscale
+      
+      [Install]
+      WantedBy=default.target
+    owner: opc:opc
+    permissions: '0644'
+
+runcmd:
+  - loginctl enable-linger opc
+  - mkdir -p /opt/app /home/opc/.config/containers /home/opc/.config/systemd/user
+  - chown -R opc:opc /opt/app /home/opc/.config
+  - |
+    if [ -f /etc/sysctl.d/99-podman-optimization.conf ]; then
+      sysctl -p /etc/sysctl.d/99-podman-optimization.conf || echo "Sysctl optimization completed with warnings"
+    fi
+  - systemctl daemon-reload && systemctl restart systemd-journald || echo "Systemd reload completed with warnings"
+  - firewall-cmd --permanent --add-port=8081/tcp || echo "Firewall port addition completed with warnings"
+  - firewall-cmd --reload || echo "Firewall reload completed with warnings"
+  - |
+    echo "Retrieving Tailscale auth key from OCI metadata..."
+    TAILSCALE_AUTH_KEY=$(curl -s -H "Authorization: Bearer Oracle" "http://169.254.169.254/opc/v2/instance/metadata/TAILSCALE_AUTH_KEY" 2>/dev/null)
+    
+    if [ -z "$TAILSCALE_AUTH_KEY" ] || [ "$TAILSCALE_AUTH_KEY" = "null" ]; then
+      echo "ERROR: Failed to retrieve TAILSCALE_AUTH_KEY from OCI metadata"
+      echo "Make sure the key is passed in the --metadata parameter when launching the instance"
+      exit 1
+    fi
+    
+    echo "Successfully retrieved Tailscale auth key from metadata"
+    export TAILSCALE_AUTH_KEY
+    # Create environment file as opc user
+    su - opc << EOF
+    mkdir -p ~/.config/tailscale
+    
+    # Create the environment file with the auth key
+    cat > ~/.config/tailscale/tailscale.env << 'ENVFILE'
+    TS_AUTHKEY=$TAILSCALE_AUTH_KEY
+    TS_HOSTNAME=$HOSTNAME
+    TS_STATE_DIR=/var/lib/tailscale
+    TS_ACCEPT_RISK=accept
+    ENVFILE
+    
+    chmod 600 ~/.config/tailscale/tailscale.env
+    
+    # Start the service
+    export XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+    systemctl --user daemon-reload
+    systemctl --user enable tailscale.service
+    systemctl --user start tailscale.service
+    
+    # Wait and check status
+    sleep 5
+    systemctl --user status tailscale.service
+    EOF 
+  - rm -rf /var/cache/dnf/* /tmp/* /var/tmp/* || echo "Cleanup completed with warnings"
+  - truncate -s 0 /var/log/messages /var/log/secure /var/log/cron || echo "Log truncation completed with warnings"
+#  - dnf update -y oci-utils || echo "OCI utils update completed with warnings"
+
+final_message: |
+  Cloud-init setup completed successfully!
+  Tailscale is running and connected - ready for GitHub Actions deployment.
