@@ -324,7 +324,7 @@ if curl -s http://localhost:8080/nginx_status >/dev/null; then
     podman run -d --name nginx-exporter \
       --restart unless-stopped \
       -p 9113:9113 \
-      --network monitoring \
+      --network host \
       docker.io/nginx/nginx-prometheus-exporter:latest \
       -nginx.scrape-uri=http://127.0.0.1:8080/nginx_status
 
