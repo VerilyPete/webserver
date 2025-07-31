@@ -82,6 +82,52 @@ providers:
       path: /etc/grafana/provisioning/dashboards
 EOF
 
+# Create nginx dashboard if nginx monitoring will be available
+if curl -s http://localhost:8080/nginx_status >/dev/null 2>&1; then
+    echo "Creating nginx dashboard..."
+    ./create-nginx-dashboard.sh 2>/dev/null || {
+        # Inline creation if script doesn't exist
+        cat > grafana/provisioning/dashboards/nginx-dashboard.json << 'EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "nginx Overview", 
+    "tags": ["nginx"],
+    "timezone": "UTC",
+    "panels": [
+      {
+        "id": 1,
+        "title": "nginx Status",
+        "type": "stat",
+        "targets": [{"expr": "nginx_up{instance=\"host.containers.internal:9113\"}", "refId": "A"}],
+        "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}}},
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Active Connections", 
+        "type": "stat",
+        "targets": [{"expr": "nginx_connections_active{instance=\"host.containers.internal:9113\"}", "refId": "A"}],
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Requests per Second",
+        "type": "timeseries", 
+        "targets": [{"expr": "irate(nginx_http_requests_total{instance=\"host.containers.internal:9113\"}[5m])", "refId": "A"}],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      }
+    ],
+    "time": {"from": "now-1h", "to": "now"},
+    "refresh": "30s"
+  },
+  "overwrite": true
+}
+EOF
+        echo "✅ Created inline nginx dashboard"
+    }
+fi
+
 echo "✅ Configuration files created"
 
 echo ""
@@ -327,7 +373,51 @@ if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
         echo "⚠️  No restore script found in backup"
     fi
 else
-    echo "ℹ️  No Grafana backup found - starting fresh"
+    echo "ℹ️  No Grafana backup found - will import default nginx dashboard"
+    
+    # Wait for Grafana to be ready
+    echo "Waiting for Grafana to be ready for dashboard import..."
+    for i in {1..30}; do
+        if curl -s -u admin:admin123 http://localhost:3000/api/health >/dev/null 2>&1; then
+            break
+        fi
+        echo "Waiting... ($i/30)"
+        sleep 2
+    done
+    
+    if [ "$NGINX_EXPORTER_OK" = true ]; then
+        echo "Importing and fixing nginx dashboard..."
+        
+        # Download the nginx dashboard JSON
+        curl -s "https://grafana.com/api/dashboards/12708/revisions/1/download" > /tmp/nginx-dashboard.json
+        
+        if [ -f /tmp/nginx-dashboard.json ]; then
+            # Fix the template variables for our setup
+            sed -i 's/"query": "label_values(nginx_up, instance)"/"query": "host.containers.internal:9113"/' /tmp/nginx-dashboard.json
+            sed -i 's/"regex": ".*"/"regex": "host.containers.internal:9113"/' /tmp/nginx-dashboard.json
+            sed -i 's/"multi": true/"multi": false/' /tmp/nginx-dashboard.json
+            sed -i 's/"includeAll": true/"includeAll": false/' /tmp/nginx-dashboard.json
+            
+            # Also fix any hardcoded $instance references that might cause issues
+            sed -i 's/\$instance/host.containers.internal:9113/g' /tmp/nginx-dashboard.json
+            
+            # Import the fixed dashboard
+            echo "Importing fixed nginx dashboard..."
+            curl -s -u admin:admin123 -H "Content-Type: application/json" \
+                -d @/tmp/nginx-dashboard.json \
+                "http://localhost:3000/api/dashboards/db" >/dev/null
+            
+            if [ $? -eq 0 ]; then
+                echo "✅ nginx dashboard imported and fixed"
+            else
+                echo "⚠️  Dashboard import may have failed"
+            fi
+            
+            rm -f /tmp/nginx-dashboard.json
+        else
+            echo "⚠️  Could not download nginx dashboard"
+        fi
+    fi
 fi
 
 echo ""
