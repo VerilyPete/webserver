@@ -52,7 +52,7 @@ scrape_configs:
   # Nginx metrics (will be available after your redeploy)
   - job_name: 'nginx'
     static_configs:
-      - targets: ['nginx-exporter:9113']
+      - targets: ['host.containers.internal:9113']
     scrape_interval: 10s
 EOF
 
@@ -326,7 +326,7 @@ if curl -s http://localhost:8080/nginx_status >/dev/null; then
       -p 9113:9113 \
       --network monitoring \
       docker.io/nginx/nginx-prometheus-exporter:latest \
-      -nginx.scrape-uri=http://web:8080/nginx_status
+      -nginx.scrape-uri=http://127.0.0.1:8080/nginx_status
 
     if [ $? -eq 0 ]; then
         echo "✅ nginx-exporter started"
