@@ -61,8 +61,8 @@ The infrastructure automatically:
                                 │                        │
                                 ▼                        ▼
                        ┌──────────────────┐    ┌─────────────────┐
-                       │ Container Registry│    │   Tailscale     │
-                       │   (GHCR)         │    │   VPN Network   │
+                       │Container Registry│    │   Tailscale     │
+                       │      (GHCR)      │    │   VPN Network   │
                        └──────────────────┘    └─────────────────┘
                                                         │
                                                         ▼
@@ -127,7 +127,7 @@ Before deploying this infrastructure, ensure you have:
 3. **Select parameters**:
    - **Deployment type**: `update`
    - **Target hostname**: `webserver-staging` or `webserver-prod`
-4. **Wait for completion** (typically 5-10 minutes)
+4. **Wait for completion** (typically ~40 seconds on a single OCPU Ampere A1 instance)
 
 ### Access Your Deployment
 
@@ -232,8 +232,8 @@ APP_ENV=production
 ### Deployment Timeline
 
 - **Fresh Deploy**: ~5 minutes
-- **Update**: ~3 minutes
-- **Build Time**: <3 minutes (parallel)
+- **Update**: ~35 seconds
+- **Build Time**: ~45 seconds (parallel)
 
 ## 🐳 Container Architecture
 
@@ -545,7 +545,7 @@ location /submit-form {
 ### General Questions
 
 **Q: How much does this cost to run?**
-A: OCI ARM instances are very cost-effective. A VM.Standard.A1.Flex with 1 OCPU and 6GB RAM costs approximately $15-20/month.
+A: OCI ARM instances are very cost-effective. A VM.Standard.A1.Flex with 1 OCPU and 6GB RAM is eligible for OCI's always free tier.
 
 **Q: Can I use this for multiple websites?**
 A: Yes! You can deploy multiple instances with different hostnames or use a single instance with multiple containers.
@@ -589,11 +589,6 @@ A: Deploy multiple instances behind a load balancer or use OCI's auto-scaling fe
 - Complete documentation
 - Production-ready deployment process
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
 
 ## 🤝 Support
 
