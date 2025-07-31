@@ -58,10 +58,17 @@ backup_grafana() {
     echo "Backing up datasources..."
     curl -s -u admin:admin123 "http://localhost:3000/api/datasources" > "$BACKUP_DIR/datasources.json" 2>/dev/null
     
-    # Backup users and organizations
-    echo "Backing up users and orgs..."
-    curl -s -u admin:admin123 "http://localhost:3000/api/users" > "$BACKUP_DIR/users.json" 2>/dev/null
-    curl -s -u admin:admin123 "http://localhost:3000/api/orgs" > "$BACKUP_DIR/orgs.json" 2>/dev/null
+    # Skip users and orgs for security (password hashes)
+    echo "⚠️  Skipping user/org backup for security (contains password hashes)"
+    
+    # Create note about excluded items
+    cat > "$BACKUP_DIR/SECURITY_NOTE.txt" << 'EOF'
+SECURITY NOTE:
+- User accounts and password hashes were NOT backed up for security
+- After restore, use default admin/admin123 credentials
+- Change the admin password after restore
+- Recreate any additional users manually
+EOF
     
     # Create restore script
     cat > "$BACKUP_DIR/restore-dashboards.sh" << 'EOF'
