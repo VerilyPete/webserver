@@ -40,19 +40,19 @@ scrape_configs:
   # System metrics
   - job_name: 'node-exporter'
     static_configs:
-      - targets: ['node-exporter:9100']
+      - targets: ['localhost:9100']
     scrape_interval: 10s
 
   # Container metrics
   - job_name: 'cadvisor'
     static_configs:
-      - targets: ['cadvisor:8080']
+      - targets: ['localhost:8080']
     scrape_interval: 10s
 
   # Nginx metrics (will be available after your redeploy)
   - job_name: 'nginx'
     static_configs:
-      - targets: ['host.containers.internal:9113']
+      - targets: ['localhost:9113']
     scrape_interval: 10s
 EOF
 
@@ -167,10 +167,10 @@ ExecStartPre=-/usr/bin/podman stop prometheus
 ExecStartPre=-/usr/bin/podman rm prometheus
 
 ExecStart=/usr/bin/podman run --rm --name prometheus \\
-  -p 9090:9090 \\
+  --port=9090 \\
   -v "${PROMETHEUS_CONFIG}:/etc/prometheus/prometheus.yml:ro,Z" \\
   -v prometheus-data:/prometheus \\
-  --network monitoring \\
+  --net=host \\
   docker.io/prom/prometheus:latest \\
   --config.file=/etc/prometheus/prometheus.yml \\
   --storage.tsdb.path=/prometheus \\
@@ -204,14 +204,14 @@ ExecStartPre=-/usr/bin/podman stop grafana
 ExecStartPre=-/usr/bin/podman rm grafana
 
 ExecStart=/usr/bin/podman run --rm --name grafana \\
-  -p 3000:3000 \\
+  --port=3000 \\
   -v grafana-data:/var/lib/grafana \\
   -v "${GRAFANA_PROVISIONING}:/etc/grafana/provisioning:ro,Z" \\
   -e GF_SECURITY_ADMIN_USER=admin \\
   -e GF_SECURITY_ADMIN_PASSWORD=admin123 \\
   -e GF_USERS_ALLOW_SIGN_UP=false \\
   -e GF_SECURITY_DISABLE_GRAVATAR=true \\
-  --network monitoring \\
+  --net=host \\
   grafana/grafana:latest
 
 ExecStop=/usr/bin/podman stop grafana
@@ -268,11 +268,11 @@ echo "=== Step 5: Add system monitoring (Node Exporter) ==="
 
 podman run -d --name node-exporter \
   --restart unless-stopped \
-  -p 9100:9100 \
+  --port=9100 \
   -v /proc:/host/proc:ro \
   -v /sys:/host/sys:ro \
   -v /:/rootfs:ro \
-  --network monitoring \
+  --net=host \
   docker.io/prom/node-exporter:latest \
   --path.procfs=/host/proc \
   --path.rootfs=/rootfs \
@@ -292,12 +292,12 @@ echo "=== Step 6: Add container monitoring (cAdvisor) ==="
 
 podman run -d --name cadvisor \
   --restart unless-stopped \
-  -p 8888:8080 \
+  --port=8888 \
   -v /:/rootfs:ro \
   -v /var/run:/var/run:ro \
   -v /sys:/sys:ro \
   -v /var/lib/containers:/var/lib/containers:ro \
-  --network monitoring \
+  --net=host \
   --privileged \
   gcr.io/cadvisor/cadvisor:latest
 
