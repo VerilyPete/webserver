@@ -424,32 +424,7 @@ jobs:
             ghcr.io/verilypete/webserver:latest \
             sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$CONFIG_DIR/nginx/nginx.conf"
 
-          # Add monitoring server block to the existing config
-          cat >> "$CONFIG_DIR/nginx/nginx.conf" << 'MONITORING_EOF'
-
-          # Status server for monitoring
-          server {
-            listen 8082;
-            server_name _;
-
-            allow 127.0.0.1;
-            allow 10.0.0.0/8;
-            allow 172.16.0.0/12;
-            allow 192.168.0.0/16;
-            deny all;
-
-            location /nginx_status {
-                stub_status on;
-                access_log off;
-            }
-
-            location /health {
-                access_log off;
-                return 200 "monitoring healthy\n";
-                add_header Content-Type text/plain;
-            }
-          }
-          MONITORING_EOF
+          # Nginx config is now complete with monitoring block included in base image
 
           # Generate Prometheus config
           cat > "$CONFIG_DIR/prometheus/prometheus.yml" << 'PROM_EOF'
