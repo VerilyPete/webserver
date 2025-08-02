@@ -415,68 +415,42 @@ jobs:
           echo "✅ All directories created successfully"
           ls -la "$CONFIG_DIR"
 
-          # Generate nginx config with status endpoint
-          cat > "$CONFIG_DIR/nginx/nginx.conf" << 'NGINX_EOF'
-          events {
-              worker_connections 1024;
-          }
+          # Generate nginx config by extracting from image and adding monitoring
+          echo "Pulling latest image and generating nginx config..."
+          podman pull ghcr.io/verilypete/webserver:latest
 
-          http {
-              include       /etc/nginx/mime.types;
-              default_type  application/octet-stream;
+          # Extract the custom nginx.conf with Formspree substitution
+          podman run --rm --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
+            ghcr.io/verilypete/webserver:latest \
+            sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$CONFIG_DIR/nginx/nginx.conf"
 
-              log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                              '$status $body_bytes_sent "$http_referer" '
-                              '"$http_user_agent" "$http_x_forwarded_for"';
+          # Add monitoring server block to the existing config
+          cat >> "$CONFIG_DIR/nginx/nginx.conf" << 'MONITORING_EOF'
 
-              access_log /var/log/nginx/access.log main;
-              error_log /var/log/nginx/error.log warn;
+    # Status server for monitoring
+    server {
+        listen 8082;
+        server_name _;
 
-              sendfile on;
-              keepalive_timeout 65;
-              gzip on;
+        allow 127.0.0.1;
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        deny all;
 
-              # Main web server
-              server {
-                  listen 80;
-                  server_name _;
-                  root /usr/share/nginx/html;
-                  index index.html index.htm;
+        location /nginx_status {
+            stub_status on;
+            access_log off;
+        }
 
-                  # Security headers
-                  add_header X-Frame-Options "SAMEORIGIN" always;
-                  add_header X-XSS-Protection "1; mode=block" always;
-                  add_header X-Content-Type-Options "nosniff" always;
-
-                  location / {
-                      try_files $uri $uri/ =404;
-                  }
-
-                  location /health {
-                      access_log off;
-                      return 200 "healthy\n";
-                      add_header Content-Type text/plain;
-                  }
-              }
-
-              # Status server for monitoring
-              server {
-                  listen 8082;
-                  server_name _;
-
-                  allow 127.0.0.1;
-                  allow 10.0.0.0/8;
-                  allow 172.16.0.0/12;
-                  allow 192.168.0.0/16;
-                  deny all;
-
-                  location /nginx_status {
-                      stub_status on;
-                      access_log off;
-                  }
-              }
-          }
-          NGINX_EOF
+        location /health {
+            access_log off;
+            return 200 "monitoring healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+}
+MONITORING_EOF
 
           # Generate Prometheus config
           cat > "$CONFIG_DIR/prometheus/prometheus.yml" << 'PROM_EOF'
