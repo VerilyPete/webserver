@@ -88,7 +88,7 @@ After deployment, services are accessible at:
 | Node Exporter | http://localhost:9100/metrics | - |
 | cAdvisor | http://localhost:8080 | - |
 | nginx Metrics | http://localhost:9113/metrics | - |
-| nginx Status | http://localhost:8080/nginx_status | - |
+| nginx Status | http://localhost:8082/nginx_status | - |
 
 ## Benefits
 

@@ -461,7 +461,7 @@ jobs:
 
               # Status server for monitoring
               server {
-                  listen 8080;
+                  listen 8082;
                   server_name _;
 
                   allow 127.0.0.1;
@@ -536,7 +536,7 @@ jobs:
             --name webserver-pod \
             --network monitoring-net \
             --publish 8081:80 \
-            --publish 8080:8080 \
+            --publish 8082:8082 \
             --publish 9113:9113
 
           # Start nginx container
@@ -553,7 +553,7 @@ jobs:
             --name nginx-exporter \
             --restart unless-stopped \
             docker.io/nginx/nginx-prometheus-exporter:latest \
-            -nginx.scrape-uri=http://localhost:8080/nginx_status
+            -nginx.scrape-uri=http://localhost:8082/nginx_status
 
           # Start cloudflared if configured
           if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
@@ -712,6 +712,7 @@ jobs:
           curl -s -o /dev/null -w "Node Exporter (9100): %{http_code}\n" http://localhost:9100/metrics || echo "Node Exporter: failed"
           curl -s -o /dev/null -w "cAdvisor (8080): %{http_code}\n" http://localhost:8080/metrics || echo "cAdvisor: failed"
           curl -s -o /dev/null -w "nginx-exporter (9113): %{http_code}\n" http://localhost:9113/metrics || echo "nginx-exporter: failed"
+          curl -s -o /dev/null -w "nginx status (8082): %{http_code}\n" http://localhost:8082/nginx_status || echo "nginx status: failed"
 
           if systemctl --user is-active --quiet webserver-pod.service; then
             echo "✅ Pod architecture deployed successfully"
@@ -723,6 +724,7 @@ jobs:
             echo "  Node Exporter: http://localhost:9100/metrics"
             echo "  cAdvisor: http://localhost:8080"
             echo "  nginx metrics: http://localhost:9113/metrics"
+            echo "  nginx status: http://localhost:8082/nginx_status"
           else
             echo "❌ Service failed to start. Checking logs..."
             systemctl --user status webserver-pod.service --no-pager -l
@@ -798,6 +800,7 @@ jobs:
             curl -s -o /dev/null -w 'Grafana (3000): %{http_code}\\n' http://localhost:3000/api/health || echo 'Grafana: failed'
             curl -s -o /dev/null -w 'Node Exporter (9100): %{http_code}\\n' http://localhost:9100/metrics || echo 'Node Exporter: failed'
             curl -s -o /dev/null -w 'nginx-exporter (9113): %{http_code}\\n' http://localhost:9113/metrics || echo 'nginx-exporter: failed'
+            curl -s -o /dev/null -w 'nginx status (8082): %{http_code}\\n' http://localhost:8082/nginx_status || echo 'nginx status: failed'
             echo ''
             echo 'Network connectivity:'
             podman network ls | grep monitoring-net || echo 'monitoring-net: not found'
