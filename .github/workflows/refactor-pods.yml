@@ -621,9 +621,18 @@ jobs:
           /usr/local/bin/setup-pod-architecture.sh
 
           # Verify tailscale is still running
+          echo "Checking if Tailscale container is running..."
+          echo "Current running containers:"
+          podman ps --format "{{.Names}}"
+
           if ! podman ps --format "{{.Names}}" | grep -q "tailscale"; then
             echo "❌ Tailscale container is not running. This will break connectivity!"
+            echo "DEBUG: grep exit code: $?"
+            echo "DEBUG: Full container list with status:"
+            podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
             exit 1
+          else
+            echo "✅ Tailscale container is running"
           fi
 
           # Start all services in order
