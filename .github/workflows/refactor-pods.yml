@@ -1,0 +1,823 @@
+# .github/workflows/deploy-or-update-via-tailscale.yml
+# This workflow is used to deploy a new instance to a private subnet without the use of a private runner
+# It deploys a new instance via OCI CLI if one does not exist, or updates an existing instance if one does exist
+# Cloud-init is used to bootstrap tailscale, at which point Github Actions takes over and finishes the deployment
+
+name: Deploy or Update via Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_type:
+        description: "Pod Architecture Deployment - webserver-pod (nginx+cloudflared+nginx-exporter), monitoring-pod (prometheus+grafana), standalone (node-exporter+cadvisor+tailscale)"
+        required: true
+        default: "update"
+        type: choice
+        options:
+          - "update"
+          - "fresh_deploy"
+      hostname:
+        description: "Target hostname"
+        required: true
+        type: choice
+        options:
+          - webserver-staging
+          - webserver-prod
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+  TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set hostname
+        id: hostname
+        run: |
+          echo "hostname=${{ github.event.inputs.hostname }}" >> $GITHUB_OUTPUT
+
+      - name: Fresh deploy - Check for existing instance & terminate if found
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 5
+        continue-on-error: true
+        id: find_existing_instance
+        with:
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          query: 'data[?\"display-name\" == `${{ github.event.inputs.hostname }}`].{id: id, name: \"display-name\"} | [0]'
+          silent: false
+
+      - name: Terminate existing instance if found
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        id: terminate_existing
+        run: |
+          INSTANCE_DATA="${{ steps.find_existing_instance.outputs.output }}"
+          if [ "$INSTANCE_DATA" != "null" ] && [ -n "$INSTANCE_DATA" ] && [ "$INSTANCE_DATA" != '""' ]; then
+            INSTANCE_ID=$(echo "$INSTANCE_DATA" | jq -r '.id // empty')
+            if [ -n "$INSTANCE_ID" ]; then
+              echo "Found existing instance $INSTANCE_ID, terminating..."
+
+              # First, remove the machine from TailNet using Tailscale API
+              HOSTNAME="${{ github.event.inputs.hostname }}"
+              echo "Removing machine '$HOSTNAME' from TailNet..."
+
+              # Get device info from Tailscale API
+              DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/tailnet/-/devices")
+
+              # Extract nodeId if device exists
+              nodeId=$(echo "$DEVICE_RESPONSE" | \
+                jq -r --arg hostname "$HOSTNAME" '.devices[] | select(.hostname | contains($hostname)) | .nodeId // empty')
+
+              if [ -z "$nodeId" ] || [ "$nodeId" = "null" ]; then
+                echo "⚠️ Machine '$HOSTNAME' not found in TailNet (may have been already removed)"
+              else
+                echo "Found Tailscale nodeId: $nodeId"
+
+              # Delete the machine from TailNet
+              DELETE_RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/device/$nodeId")
+
+              case "$DELETE_RESPONSE" in
+                *200|*204) echo "✅ Machine '$HOSTNAME' removed from TailNet" ;;
+                *401) echo "⚠️ Unauthorized - check your API key" ;;
+                *404) echo "⚠️ Device not found (may have been already deleted)" ;;
+                *) echo "⚠️ Failed to remove machine from TailNet (HTTP status: $DELETE_RESPONSE)" ;;
+              esac
+              fi
+
+              # Then terminate the OCI instance
+              echo "Terminating OCI instance $INSTANCE_ID..."
+              oci compute instance terminate --instance-id "$INSTANCE_ID" --force --wait-for-state TERMINATED
+              echo "✅ Existing instance terminated"
+            fi
+          else
+            echo "No existing instance found with name ${{ github.event.inputs.hostname }}"
+          fi
+
+      - name: Deploy new instance (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 15
+        id: create_instance
+        with:
+          command: 'compute instance launch --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --shape "VM.Standard.A1.Flex" --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}" --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" --user-data-file ./scripts/tailscale-cloud-init.yml --display-name "${{ steps.hostname.outputs.hostname }}" --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"${{ steps.hostname.outputs.hostname }}\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}" --wait-for-state RUNNING --max-wait-seconds 900'
+          silent: false
+
+      - name: Parse instance ID (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        id: parse_instance_id
+        run: |
+          # Remove outer quotes and unescape the JSON string
+          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
+          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Wait for Tailscale connectivity (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        timeout-minutes: 10
+        run: |
+          TARGET_HOSTNAME="${{ steps.hostname.outputs.hostname }}"
+          echo "Waiting for Tailscale connectivity to $TARGET_HOSTNAME..."
+
+          MAX_ATTEMPTS=30
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "echo 'Tailscale Ready'" 2>/dev/null; then
+              echo "✅ Tailscale connection successful to $TARGET_HOSTNAME (attempt $i)"
+              break
+            fi
+            if [ $i -eq $MAX_ATTEMPTS ]; then
+              echo "❌ Tailscale connection failed after maximum attempts"
+              echo "💡 Check Tailscale admin console and instance cloud-init logs"
+              exit 1
+            fi
+            echo "Tailscale attempt $i/$MAX_ATTEMPTS failed, waiting 20 seconds..."
+            sleep 20
+          done
+
+      - name: Setup infrastructure
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
+        timeout-minutes: 8
+        run: |
+          # Use the selected hostname
+          TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
+          echo "Target instance: $TARGET_HOSTNAME"
+
+          # Determine Cloudflare tunnel token based on hostname
+          if [ "$TARGET_HOSTNAME" = "webserver-prod" ]; then
+            CLOUDFLARE_TOKEN="${{ secrets.CLOUDFLARE_PROD_TUNNEL_TOKEN }}"
+            echo "Using production Cloudflare tunnel token"
+          else
+            CLOUDFLARE_TOKEN="${{ secrets.CLOUDFLARE_STAGING_TUNNEL_TOKEN }}"
+            echo "Using staging Cloudflare tunnel token"
+          fi
+
+          # Quick SSH connectivity check via Tailscale
+          echo "Checking Tailscale SSH access to $TARGET_HOSTNAME..."
+          SSH_READY=false
+          MAX_ATTEMPTS=6
+
+          # Ensure XDG_RUNTIME_DIR is set for user systemd services
+          export XDG_RUNTIME_DIR="/run/user/$(ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "id -u" 2>/dev/null)"
+          if [ -z "$XDG_RUNTIME_DIR" ] || [ "$XDG_RUNTIME_DIR" = "/run/user/" ]; then
+            echo "⚠️  Could not determine XDG_RUNTIME_DIR, using default"
+            export XDG_RUNTIME_DIR="/run/user/1000"
+          fi
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "echo 'SSH Ready'" 2>/dev/null; then
+              echo "✅ SSH connection successful via Tailscale (attempt $i)"
+              SSH_READY=true
+              break
+            fi
+            if [ $i -eq $MAX_ATTEMPTS ]; then
+              echo "❌ SSH connection failed after maximum attempts"
+              exit 1
+            fi
+            echo "SSH attempt $i/$MAX_ATTEMPTS failed, waiting 10 seconds..."
+            sleep 10
+          done
+
+          # Setup infrastructure with better error handling
+          echo "Setting up infrastructure on $TARGET_HOSTNAME..."
+
+          # Create a script file to execute remotely for better error handling
+          cat > /tmp/setup_script.sh << 'SETUP_EOF'
+          #!/bin/bash
+          set -euo pipefail  # Strict error handling
+
+          echo "Setting up system configuration..."
+          echo "Current user: $(whoami)"
+          echo "Current directory: $(pwd)"
+          echo "Home directory: $HOME"
+
+          # Check basic system state
+          echo "Checking system state..."
+          echo "Disk space:"
+          df -h / || echo "df command failed"
+          echo "Memory:"
+          free -h || echo "free command failed"
+
+          # setup subuid/subgid with detailed logging
+          echo "Setting up subuid/subgid..."
+          if ! grep -q "^opc:" /etc/subuid 2>/dev/null; then
+            echo "Adding opc to /etc/subuid..."
+            echo "opc:100000:65536" | sudo tee -a /etc/subuid || { echo "❌ Failed to add to subuid"; exit 1; }
+          else
+            echo "opc already exists in /etc/subuid"
+          fi
+
+          if ! grep -q "^opc:" /etc/subgid 2>/dev/null; then
+            echo "Adding opc to /etc/subgid..."
+            echo "opc:100000:65536" | sudo tee -a /etc/subgid || { echo "❌ Failed to add to subgid"; exit 1; }
+          else
+            echo "opc already exists in /etc/subgid"
+          fi
+
+          # Setup cron job for podman cleanup (if not already done)
+          echo "Setting up cron job for podman cleanup..."
+          if ! crontab -l 2>/dev/null | grep -q "podman-cleanup.sh"; then
+            echo "Adding podman cleanup cron job..."
+            (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/podman-cleanup.sh >> /var/log/podman-cleanup.log 2>&1") | crontab - || { echo "❌ Failed to setup cron job"; exit 1; }
+          else
+            echo "Podman cleanup cron job already exists"
+          fi
+
+          # Ensure user systemd service is enabled and running (already done in cloud-init)
+          # Just verify the user systemd is working
+          echo "Checking user systemd..."
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          echo "XDG_RUNTIME_DIR set to: $XDG_RUNTIME_DIR"
+
+          if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+            echo "Creating XDG_RUNTIME_DIR: $XDG_RUNTIME_DIR"
+            sudo mkdir -p "$XDG_RUNTIME_DIR" || { echo "❌ Failed to create XDG_RUNTIME_DIR"; exit 1; }
+            sudo chown $(id -u):$(id -g) "$XDG_RUNTIME_DIR" || { echo "❌ Failed to chown XDG_RUNTIME_DIR"; exit 1; }
+          fi
+
+          systemctl --user daemon-reload || { echo "❌ Failed to reload user systemd"; exit 1; }
+
+          # Create cleanup script (if not exists)
+          echo "Creating cleanup script..."
+          if [ ! -f "/usr/local/bin/podman-cleanup.sh" ]; then
+            echo "Creating /usr/local/bin/podman-cleanup.sh..."
+            sudo tee /usr/local/bin/podman-cleanup.sh > /dev/null << 'CLEANUP_EOF' || { echo "❌ Failed to create cleanup script"; exit 1; }
+          #!/bin/bash
+          for user in $(getent passwd | grep -E '/home|/var/lib' | cut -d: -f1); do
+            if id "$user" &>/dev/null; then
+              sudo -u "$user" podman container prune -f 2>/dev/null || true
+              sudo -u "$user" podman image prune -af --filter "until=24h" 2>/dev/null || true
+              sudo -u "$user" podman volume prune -f 2>/dev/null || true
+              sudo -u "$user" podman system prune -af 2>/dev/null || true
+            fi
+          done
+          podman container prune -f; podman image prune -af --filter "until=24h"; podman volume prune -f; podman system prune -af
+          buildah rmi --prune; journalctl --vacuum-time=7d; journalctl --vacuum-size=500M
+          CLEANUP_EOF
+            sudo chmod +x /usr/local/bin/podman-cleanup.sh || { echo "❌ Failed to make cleanup script executable"; exit 1; }
+            echo "✅ Cleanup script created successfully"
+          else
+            echo "Cleanup script already exists"
+          fi
+
+          echo "✅ System configuration complete"
+
+          echo "Setting up container infrastructure..."
+
+          # Clone/update repository with explicit error checking
+          if [ ! -d "/home/opc/webserver" ]; then
+            echo "Cloning repository..."
+            if ! git clone https://github.com/VerilyPete/webserver.git /home/opc/webserver; then
+              echo "❌ ERROR: Failed to clone repository"
+              exit 1
+            fi
+            echo "✅ Repository cloned successfully"
+          else
+            echo "Updating existing repository..."
+            if ! (cd /home/opc/webserver && git pull origin main); then
+              echo "❌ ERROR: Failed to update repository"
+              exit 1
+            fi
+            echo "✅ Repository updated successfully"
+          fi
+
+          # Verify directory exists
+          if [ ! -d "/home/opc/webserver" ]; then
+            echo "❌ ERROR: webserver directory does not exist after clone/update"
+            exit 1
+          fi
+
+          echo "Setting up environment variables..."
+          cd ~/webserver || { echo "❌ ERROR: Cannot change to webserver directory"; exit 1; }
+
+          # Create .env file
+          cat > .env << ENV_EOF
+          HOSTNAME=$1
+          TAILSCALE_AUTH_KEY=$2
+          CLOUDFLARE_TUNNEL_TOKEN=$3
+          FORMSPREE_ENDPOINT=$4
+          APP_PORT=8081
+          APP_ENV=production
+          ENV_EOF
+
+          chmod 600 .env
+
+          # Verify .env file was created
+          if [ ! -f ".env" ]; then
+            echo "❌ ERROR: .env file was not created"
+            exit 1
+          fi
+
+          echo "✅ Environment file created successfully"
+
+          # Create systemd service files
+          mkdir -p ~/.config/systemd/user
+
+          cat > ~/.config/systemd/user/webserver-pod.service << 'SERVICE_EOF'
+          [Unit]
+          Description=Pod Architecture - Web Infrastructure
+          Wants=network-online.target
+          After=network-online.target
+          RequiresMountsFor=%t/containers
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          Restart=on-failure
+          RestartSec=10
+          TimeoutStopSec=70
+          WorkingDirectory=%h/webserver
+          Environment=PODMAN_SYSTEMD_UNIT=%n
+          ExecStart=/usr/local/bin/start-webserver-pod.sh
+          ExecStop=/usr/bin/podman pod stop webserver-pod monitoring-pod
+          ExecStopPost=/usr/bin/podman pod rm -f webserver-pod monitoring-pod
+
+          [Install]
+          WantedBy=default.target
+          SERVICE_EOF
+
+          # Create pod setup scripts
+          sudo tee /usr/local/bin/setup-pod-architecture.sh > /dev/null << 'SETUP_PODS_EOF'
+          #!/bin/bash
+          set -e
+
+          # Ensure we're in the right directory
+          cd /home/opc/webserver || { echo "ERROR: Cannot change to /home/opc/webserver"; exit 1; }
+
+          # Load environment
+          if [ ! -f ".env" ]; then
+            echo "ERROR: .env file not found in $(pwd)"
+            exit 1
+          fi
+          source .env
+
+          echo "🚀 Setting up pod architecture..."
+
+          # Create monitoring network
+          echo "Creating monitoring network..."
+          podman network create monitoring-net --subnet=10.10.0.0/24 2>/dev/null || echo "Network already exists"
+
+          # Create volumes
+          echo "Creating persistent volumes..."
+          podman volume create prometheus-data 2>/dev/null || echo "prometheus-data volume exists"
+          podman volume create grafana-data 2>/dev/null || echo "grafana-data volume exists"
+
+          # Setup config directories
+          CONFIG_DIR="/home/opc/webserver/config"
+          mkdir -p "$CONFIG_DIR"/{prometheus,grafana/provisioning/{datasources,dashboards},nginx}
+
+          # Generate nginx config with status endpoint
+          cat > "$CONFIG_DIR/nginx/nginx.conf" << 'NGINX_EOF'
+          events {
+              worker_connections 1024;
+          }
+
+          http {
+              include       /etc/nginx/mime.types;
+              default_type  application/octet-stream;
+
+              log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                              '$status $body_bytes_sent "$http_referer" '
+                              '"$http_user_agent" "$http_x_forwarded_for"';
+
+              access_log /var/log/nginx/access.log main;
+              error_log /var/log/nginx/error.log warn;
+
+              sendfile on;
+              keepalive_timeout 65;
+              gzip on;
+
+              # Main web server
+              server {
+                  listen 80;
+                  server_name _;
+                  root /usr/share/nginx/html;
+                  index index.html index.htm;
+
+                  # Security headers
+                  add_header X-Frame-Options "SAMEORIGIN" always;
+                  add_header X-XSS-Protection "1; mode=block" always;
+                  add_header X-Content-Type-Options "nosniff" always;
+
+                  location / {
+                      try_files $uri $uri/ =404;
+                  }
+
+                  location /health {
+                      access_log off;
+                      return 200 "healthy\n";
+                      add_header Content-Type text/plain;
+                  }
+              }
+
+              # Status server for monitoring
+              server {
+                  listen 8080;
+                  server_name _;
+
+                  allow 127.0.0.1;
+                  allow 10.0.0.0/8;
+                  allow 172.16.0.0/12;
+                  allow 192.168.0.0/16;
+                  deny all;
+
+                  location /nginx_status {
+                      stub_status on;
+                      access_log off;
+                  }
+              }
+          }
+          NGINX_EOF
+
+          # Generate Prometheus config
+          cat > "$CONFIG_DIR/prometheus/prometheus.yml" << 'PROM_EOF'
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+
+          PROM_EOF
+
+          # Set proper permissions
+          chmod -R 644 "$CONFIG_DIR"
+          find "$CONFIG_DIR" -type d -exec chmod 755 {} \;
+
+          # Set SELinux context if enabled
+          if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+            chcon -Rt container_file_t "$CONFIG_DIR" 2>/dev/null || true
+          fi
+
+          echo "✅ Configuration files created"
+          SETUP_PODS_EOF
+
+          sudo tee /usr/local/bin/start-webserver-pod.sh > /dev/null << 'WEB_POD_EOF'
+          #!/bin/bash
+          set -e
+
+          cd /home/opc/webserver
+          source .env
+
+          echo "🌐 Starting webserver pod..."
+
+          # Stop existing webserver pod
+          podman pod stop webserver-pod 2>/dev/null || true
+          podman pod rm webserver-pod 2>/dev/null || true
+
+          # Create webserver pod with monitoring network
+          podman pod create \
+            --name webserver-pod \
+            --network monitoring-net \
+            --publish 8081:80 \
+            --publish 8080:8080 \
+            --publish 9113:9113
+
+          # Start nginx container
+          podman run -d \
+            --pod webserver-pod \
+            --name web \
+            --restart unless-stopped \
+            --mount type=bind,source="/home/opc/webserver/config/nginx/nginx.conf",target=/etc/nginx/nginx.conf,ro \
+            --pull=always ghcr.io/verilypete/webserver:latest
+
+          # Start nginx-exporter
+          podman run -d \
+            --pod webserver-pod \
+            --name nginx-exporter \
+            --restart unless-stopped \
+            docker.io/nginx/nginx-prometheus-exporter:latest \
+            -nginx.scrape-uri=http://localhost:8080/nginx_status
+
+          # Start cloudflared if configured
+          if [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] && [ "$CLOUDFLARE_TUNNEL_TOKEN" != "your-tunnel-token-here" ]; then
+            echo "Starting Cloudflare tunnel..."
+            podman run -d \
+              --pod webserver-pod \
+              --name cloudflared \
+              --restart unless-stopped \
+              --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" \
+              --pull=always docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
+          fi
+
+          echo "✅ Webserver pod started"
+          WEB_POD_EOF
+
+          sudo tee /usr/local/bin/start-monitoring-pod.sh > /dev/null << 'MON_POD_EOF'
+          #!/bin/bash
+          set -e
+
+          cd /home/opc/webserver
+
+          echo "📊 Starting monitoring pod..."
+
+          # Stop existing monitoring pod
+          podman pod stop monitoring-pod 2>/dev/null || true
+          podman pod rm monitoring-pod 2>/dev/null || true
+
+          # Create monitoring pod
+          podman pod create \
+            --name monitoring-pod \
+            --network monitoring-net \
+            --publish 9090:9090 \
+            --publish 3000:3000
+
+          # Start Prometheus
+          podman run -d \
+            --pod monitoring-pod \
+            --name prometheus \
+            --restart unless-stopped \
+            --mount type=bind,source="/home/opc/webserver/config/prometheus/prometheus.yml",target=/etc/prometheus/prometheus.yml,ro \
+            --mount type=volume,source=prometheus-data,target=/prometheus \
+            docker.io/prom/prometheus:latest \
+            --config.file=/etc/prometheus/prometheus.yml \
+            --storage.tsdb.path=/prometheus \
+            --storage.tsdb.retention.time=30d \
+            --web.enable-lifecycle
+
+          # Start Grafana
+          podman run -d \
+            --pod monitoring-pod \
+            --name grafana \
+            --restart unless-stopped \
+            --mount type=volume,source=grafana-data,target=/var/lib/grafana \
+            --mount type=bind,source="/home/opc/webserver/config/grafana/provisioning",target=/etc/grafana/provisioning,ro \
+            --env GF_SECURITY_ADMIN_USER=admin \
+            --env GF_SECURITY_ADMIN_PASSWORD=admin123 \
+            --env GF_USERS_ALLOW_SIGN_UP=false \
+            --env GF_SECURITY_DISABLE_GRAVATAR=true \
+            docker.io/grafana/grafana:latest
+
+          echo "✅ Monitoring pod started"
+          MON_POD_EOF
+
+          sudo tee /usr/local/bin/start-standalone-services.sh > /dev/null << 'STANDALONE_EOF'
+          #!/bin/bash
+          set -e
+
+          echo "🔧 Starting standalone monitoring services..."
+
+          # Stop existing services
+          podman stop node-exporter cadvisor 2>/dev/null || true
+          podman rm node-exporter cadvisor 2>/dev/null || true
+
+          # Start node-exporter
+          podman run -d \
+            --name node-exporter \
+            --restart unless-stopped \
+            --network host \
+            --pid host \
+            --userns host \
+            --user 65534:65534 \
+            --mount type=bind,source=/proc,target=/host/proc,ro \
+            --mount type=bind,source=/sys,target=/host/sys,ro \
+            --mount type=bind,source=/,target=/rootfs,ro \
+            docker.io/prom/node-exporter:latest \
+            --path.procfs=/host/proc \
+            --path.rootfs=/rootfs \
+            --path.sysfs=/host/sys \
+            --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
+
+          # Start cAdvisor
+          podman run -d \
+            --name cadvisor \
+            --restart unless-stopped \
+            --network host \
+            --privileged \
+            --mount type=bind,source=/,target=/rootfs,ro \
+            --mount type=bind,source=/var/run,target=/var/run,ro \
+            --mount type=bind,source=/sys,target=/sys,ro \
+            --mount type=bind,source=/var/lib/containers,target=/var/lib/containers,ro \
+            --device /dev/kmsg:/dev/kmsg \
+            gcr.io/cadvisor/cadvisor:latest \
+            --port=8080 \
+            --housekeeping_interval=30s
+
+          echo "✅ Standalone services started"
+          STANDALONE_EOF
+
+          # Make scripts executable
+          sudo chmod +x /usr/local/bin/setup-pod-architecture.sh
+          sudo chmod +x /usr/local/bin/start-webserver-pod.sh
+          sudo chmod +x /usr/local/bin/start-monitoring-pod.sh
+          sudo chmod +x /usr/local/bin/start-standalone-services.sh
+
+          # Run pod architecture setup
+          echo "Setting up pod architecture..."
+          /usr/local/bin/setup-pod-architecture.sh
+
+          # Verify tailscale is still running
+          if ! podman ps --format "{{.Names}}" | grep -q "^tailscale$"; then
+            echo "❌ Tailscale container is not running. This will break connectivity!"
+            exit 1
+          fi
+
+          # Start all services in order
+          echo "Starting services..."
+          /usr/local/bin/start-standalone-services.sh
+          sleep 5
+          /usr/local/bin/start-webserver-pod.sh
+          sleep 10
+          /usr/local/bin/start-monitoring-pod.sh
+
+          # Update systemd service
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          systemctl --user daemon-reload
+          systemctl --user enable webserver-pod.service
+          systemctl --user restart webserver-pod.service
+
+          # Wait and verify services
+          sleep 10
+          echo "Verifying pod architecture..."
+
+          # Check pods
+          echo "Pod status:"
+          podman pod ps
+
+          # Check containers
+          echo "Container status:"
+          podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+          # Health checks
+          echo "Health checks:"
+          curl -s -o /dev/null -w "Web (8081): %{http_code}\n" http://localhost:8081 || echo "Web: failed"
+          curl -s -o /dev/null -w "Prometheus (9090): %{http_code}\n" http://localhost:9090 || echo "Prometheus: failed"
+          curl -s -o /dev/null -w "Grafana (3000): %{http_code}\n" http://localhost:3000 || echo "Grafana: failed"
+          curl -s -o /dev/null -w "Node Exporter (9100): %{http_code}\n" http://localhost:9100/metrics || echo "Node Exporter: failed"
+          curl -s -o /dev/null -w "cAdvisor (8080): %{http_code}\n" http://localhost:8080/metrics || echo "cAdvisor: failed"
+          curl -s -o /dev/null -w "nginx-exporter (9113): %{http_code}\n" http://localhost:9113/metrics || echo "nginx-exporter: failed"
+
+          if systemctl --user is-active --quiet webserver-pod.service; then
+            echo "✅ Pod architecture deployed successfully"
+            echo ""
+            echo "🌐 Service URLs:"
+            echo "  Website: http://localhost:8081"
+            echo "  Prometheus: http://localhost:9090"
+            echo "  Grafana: http://localhost:3000 (admin/admin123)"
+            echo "  Node Exporter: http://localhost:9100/metrics"
+            echo "  cAdvisor: http://localhost:8080"
+            echo "  nginx metrics: http://localhost:9113/metrics"
+          else
+            echo "❌ Service failed to start. Checking logs..."
+            systemctl --user status webserver-pod.service --no-pager -l
+            exit 1
+          fi
+
+          echo "✅ Infrastructure setup completed successfully"
+          SETUP_EOF
+
+          # Copy script to remote host and execute it
+          scp -o StrictHostKeyChecking=no /tmp/setup_script.sh opc@$TARGET_HOSTNAME:/tmp/
+
+          # Execute the script with parameters and capture exit code
+          echo "Executing setup script on $TARGET_HOSTNAME..."
+          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "chmod +x /tmp/setup_script.sh && bash -x /tmp/setup_script.sh '${{ github.event.inputs.hostname }}' '${{ secrets.TAILSCALE_AUTH_KEY }}' '$CLOUDFLARE_TOKEN' '${{ secrets.FORMSPREE_ENDPOINT }}' 2>&1"; then
+            echo "✅ Infrastructure setup completed successfully"
+          else
+            SCRIPT_EXIT_CODE=$?
+            echo "❌ Infrastructure setup failed with exit code: $SCRIPT_EXIT_CODE"
+            echo "Attempting to retrieve any error logs..."
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "echo 'Last 50 lines of journalctl:'; sudo journalctl -n 50 --no-pager || true; echo 'Cloud-init logs:'; sudo tail -50 /var/log/cloud-init-output.log 2>/dev/null || echo 'No cloud-init-output.log'; sudo tail -50 /var/log/cloud-init.log 2>/dev/null || echo 'No cloud-init.log'" || true
+            exit 1
+          fi
+
+          # Clean up the script
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "rm -f /tmp/setup_script.sh"
+
+      - name: Verify deployment status
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
+        timeout-minutes: 3
+        run: |
+          TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
+          echo "Verifying deployment on $TARGET_HOSTNAME..."
+
+          # Check if webserver directory exists
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "[ -d '/home/opc/webserver' ]"; then
+            echo "❌ ERROR: webserver directory does not exist"
+            exit 1
+          fi
+          echo "✅ webserver directory exists"
+
+          # Check if .env file exists
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "[ -f '/home/opc/webserver/.env' ]"; then
+            echo "❌ ERROR: .env file does not exist"
+            exit 1
+          fi
+          echo "✅ .env file exists"
+
+          # Check if containers are running
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "systemctl --user is-active --quiet webserver-pod.service"; then
+            echo "❌ ERROR: webserver-pod service is not running"
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "systemctl --user status webserver-pod.service --no-pager -l"
+            exit 1
+          fi
+          echo "✅ webserver-pod service is running"
+
+          # Check if web server is responding
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "curl -f http://localhost:8081 >/dev/null 2>&1"; then
+            echo "❌ ERROR: Web server is not responding on port 8081"
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "podman pod ps && podman ps"
+            exit 1
+          fi
+          echo "✅ Web server is responding on port 8081"
+
+          # Check pod architecture health
+          echo "Verifying pod architecture health..."
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "
+            echo 'Pod status:'
+            podman pod ps
+            echo ''
+            echo 'Service health checks:'
+            curl -s -o /dev/null -w 'Prometheus (9090): %{http_code}\\n' http://localhost:9090/-/healthy || echo 'Prometheus: failed'
+            curl -s -o /dev/null -w 'Grafana (3000): %{http_code}\\n' http://localhost:3000/api/health || echo 'Grafana: failed'
+            curl -s -o /dev/null -w 'Node Exporter (9100): %{http_code}\\n' http://localhost:9100/metrics || echo 'Node Exporter: failed'
+            curl -s -o /dev/null -w 'nginx-exporter (9113): %{http_code}\\n' http://localhost:9113/metrics || echo 'nginx-exporter: failed'
+            echo ''
+            echo 'Network connectivity:'
+            podman network ls | grep monitoring-net || echo 'monitoring-net: not found'
+          "
+
+          echo "🎉 Pod architecture verification completed"
+
+      - name: Display new instance info (fresh deploy)
+        if: github.event.inputs.deploy_type == 'fresh_deploy'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
+          query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
+
+      - name: Final deployment summary
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo ""
+          if [ "${{ github.event.inputs.deploy_type }}" = "fresh_deploy" ]; then
+            echo "🆕 New instance created:"
+            echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
+            echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"
+          else
+            echo "🔄 Existing instance updated:"
+            echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"
+          fi
+          echo ""
+          echo "🔍 Check your Tailscale admin console for the device"
+          echo "🌐 Web server accessible at http://${{ github.event.inputs.hostname }}:8081 (via Tailscale)"
+          echo "📊 Monitor with: ssh opc@${{ github.event.inputs.hostname }} 'podman pod ps && podman ps'"
+
+  cleanup-old-instances:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: deploy
+    if: github.event.inputs.deploy_type == 'fresh_deploy'
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+      OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+    steps:
+      - name: List old instances for manual cleanup
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        timeout-minutes: 3
+        with:
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          query: 'data[?contains(\"display-name\", `webserver`) && \"display-name\" != `${{ github.event.inputs.hostname }}`].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
+          silent: false
+
+      - name: Cleanup instructions
+        run: |
+          echo ""
+          echo "🧹 Old instances listed above may need cleanup"
+          echo "💡 To terminate old instances:"
+          echo "   Use the OCI Console or run:"
+          echo "   oci compute instance terminate --instance-id <INSTANCE_ID> --force"
