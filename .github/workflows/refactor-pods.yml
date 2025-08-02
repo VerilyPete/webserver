@@ -755,12 +755,12 @@ jobs:
           echo "✅ webserver-pod service is running"
 
           # Check if web server is responding
-          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "curl -f http://localhost:8081 >/dev/null 2>&1"; then
-            echo "❌ ERROR: Web server is not responding on port 8081"
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "curl -f http://localhost:80 >/dev/null 2>&1"; then
+            echo "❌ ERROR: Web server is not responding on port 80"
             ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "podman pod ps && podman ps"
             exit 1
           fi
-          echo "✅ Web server is responding on port 8081"
+          echo "✅ Web server is responding on port 80"
 
           # Check pod architecture health
           echo "Verifying pod architecture health..."
