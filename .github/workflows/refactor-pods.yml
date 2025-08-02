@@ -621,7 +621,7 @@ jobs:
           /usr/local/bin/setup-pod-architecture.sh
 
           # Verify tailscale is still running
-          if ! podman ps --format "{{.Names}}" | grep -q "^tailscale$"; then
+          if ! podman ps --format "{{.Names}}" | grep -q "tailscale"; then
             echo "❌ Tailscale container is not running. This will break connectivity!"
             exit 1
           fi
