@@ -437,7 +437,48 @@ jobs:
               static_configs:
                 - targets: ['localhost:9090']
 
+            - job_name: 'node-exporter'
+              static_configs:
+                - targets: ['host.containers.internal:9100']
+
+            - job_name: 'cadvisor'
+              static_configs:
+                - targets: ['host.containers.internal:8080']
+
+            - job_name: 'nginx-exporter'
+              static_configs:
+                - targets: ['host.containers.internal:9113']
+
           PROM_EOF
+
+          # Generate Grafana datasource config
+          cat > "$CONFIG_DIR/grafana/provisioning/datasources/prometheus.yml" << 'GRAFANA_DS_EOF'
+          apiVersion: 1
+
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              access: proxy
+              url: http://prometheus:9090
+              isDefault: true
+              editable: true
+          GRAFANA_DS_EOF
+
+          # Generate Grafana dashboard provider config
+          cat > "$CONFIG_DIR/grafana/provisioning/dashboards/dashboards.yml" << 'GRAFANA_DASH_EOF'
+          apiVersion: 1
+
+          providers:
+            - name: 'default'
+              orgId: 1
+              folder: ''
+              type: file
+              disableDeletion: false
+              updateIntervalSeconds: 10
+              allowUiUpdates: true
+              options:
+                path: /var/lib/grafana/dashboards
+          GRAFANA_DASH_EOF
 
           # Set proper permissions with explicit checking
           echo "Setting file permissions..."
