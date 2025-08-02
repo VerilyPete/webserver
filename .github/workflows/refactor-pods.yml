@@ -451,7 +451,7 @@ jobs:
         }
     }
 }
-MONITORING_EOF
+          MONITORING_EOF
           rm "$CONFIG_DIR/nginx/nginx_base.conf"
 
           # Generate Prometheus config
