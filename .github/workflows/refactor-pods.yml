@@ -424,7 +424,11 @@ jobs:
             ghcr.io/verilypete/webserver:latest \
             sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$CONFIG_DIR/nginx/nginx.conf"
 
-          # Add monitoring server block to the existing config
+          # Add monitoring server block within the http block
+          # First, remove the closing brace of the http block
+          sed -i '$ d' "$CONFIG_DIR/nginx/nginx.conf"
+
+          # Add monitoring server block and close http block
           cat >> "$CONFIG_DIR/nginx/nginx.conf" << 'MONITORING_EOF'
 
     # Status server for monitoring
