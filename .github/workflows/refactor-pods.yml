@@ -422,13 +422,10 @@ jobs:
           # Extract the custom nginx.conf with Formspree substitution
           podman run --rm --env FORMSPREE_ENDPOINT="$FORMSPREE_ENDPOINT" \
             ghcr.io/verilypete/webserver:latest \
-            sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$CONFIG_DIR/nginx/nginx.conf"
+            sh -c 'sed "s|__FORMSPREE_ENDPOINT__|$FORMSPREE_ENDPOINT|g" /etc/nginx/nginx.conf' > "$CONFIG_DIR/nginx/nginx_base.conf"
 
-          # Add monitoring server block within the http block
-          # First, remove the closing brace of the http block
-          sed -i '$ d' "$CONFIG_DIR/nginx/nginx.conf"
-
-          # Add monitoring server block and close http block
+          # Create final config by inserting monitoring server before the last closing brace
+          head -n -1 "$CONFIG_DIR/nginx/nginx_base.conf" > "$CONFIG_DIR/nginx/nginx.conf"
           cat >> "$CONFIG_DIR/nginx/nginx.conf" << 'MONITORING_EOF'
 
     # Status server for monitoring
@@ -455,6 +452,7 @@ jobs:
     }
 }
 MONITORING_EOF
+          rm "$CONFIG_DIR/nginx/nginx_base.conf"
 
           # Generate Prometheus config
           cat > "$CONFIG_DIR/prometheus/prometheus.yml" << 'PROM_EOF'
