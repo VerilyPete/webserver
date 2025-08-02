@@ -616,23 +616,39 @@ jobs:
           sudo chmod +x /usr/local/bin/start-monitoring-pod.sh
           sudo chmod +x /usr/local/bin/start-standalone-services.sh
 
+          # Check container state before setup
+          echo "=== BEFORE setup-pod-architecture.sh ==="
+          echo "Running containers:"
+          podman ps --format "{{.Names}}" | sort
+          echo "Tailscale status:"
+          podman ps --filter name=tailscale --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+          echo "========================================="
+
           # Run pod architecture setup
           echo "Setting up pod architecture..."
           /usr/local/bin/setup-pod-architecture.sh
+
+          # Check container state after setup
+          echo "=== AFTER setup-pod-architecture.sh ==="
+          echo "Running containers:"
+          podman ps --format "{{.Names}}" | sort
+          echo "Tailscale status:"
+          podman ps --filter name=tailscale --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+          echo "========================================"
 
           # Verify tailscale is still running
           echo "Checking if Tailscale container is running..."
           echo "Current running containers:"
           podman ps --format "{{.Names}}"
 
-          if ! podman ps --format "{{.Names}}" | grep -q "tailscale"; then
+          TAILSCALE_COUNT=$(podman ps --filter name=tailscale --format "{{.Names}}" | wc -l)
+          if [ "$TAILSCALE_COUNT" -eq 0 ]; then
             echo "❌ Tailscale container is not running. This will break connectivity!"
-            echo "DEBUG: grep exit code: $?"
             echo "DEBUG: Full container list with status:"
             podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
             exit 1
           else
-            echo "✅ Tailscale container is running"
+            echo "✅ Tailscale container is running (found $TAILSCALE_COUNT container(s))"
           fi
 
           # Start all services in order
