@@ -563,7 +563,7 @@ jobs:
               --name cloudflared \
               --restart unless-stopped \
               --env TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" \
-              --pull=always docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run
+              --pull=always docker.io/cloudflare/cloudflared:latest tunnel --no-autoupdate run --url http://localhost:80
           fi
 
           echo "✅ Webserver pod started"
