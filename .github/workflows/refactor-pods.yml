@@ -369,6 +369,12 @@ jobs:
           # Ensure we're in the right directory
           cd /home/opc/webserver || { echo "ERROR: Cannot change to /home/opc/webserver"; exit 1; }
 
+          # Verify we're in the correct location
+          if [ ! -d "/home/opc/webserver" ]; then
+            echo "ERROR: webserver directory does not exist"
+            exit 1
+          fi
+
           # Load environment
           if [ ! -f ".env" ]; then
             echo "ERROR: .env file not found in $(pwd)"
@@ -377,6 +383,9 @@ jobs:
           source .env
 
           echo "🚀 Setting up pod architecture..."
+          echo "Current working directory: $(pwd)"
+          echo "User: $(whoami)"
+          echo "Home: $HOME"
 
           # Create monitoring network
           echo "Creating monitoring network..."
@@ -387,9 +396,24 @@ jobs:
           podman volume create prometheus-data 2>/dev/null || echo "prometheus-data volume exists"
           podman volume create grafana-data 2>/dev/null || echo "grafana-data volume exists"
 
-          # Setup config directories
-          CONFIG_DIR="/home/opc/webserver/config"
-          mkdir -p "$CONFIG_DIR"/{prometheus,grafana/provisioning/{datasources,dashboards},nginx}
+          # Setup config directories with explicit error checking
+          CONFIG_DIR="$(pwd)/config"
+          echo "Creating config directory: $CONFIG_DIR"
+
+          if ! mkdir -p "$CONFIG_DIR"; then
+            echo "❌ Failed to create base config directory: $CONFIG_DIR"
+            ls -la $(dirname "$CONFIG_DIR")
+            exit 1
+          fi
+
+          echo "Creating subdirectories..."
+          mkdir -p "$CONFIG_DIR/prometheus" || { echo "❌ Failed to create prometheus dir"; exit 1; }
+          mkdir -p "$CONFIG_DIR/grafana/provisioning/datasources" || { echo "❌ Failed to create grafana datasources dir"; exit 1; }
+          mkdir -p "$CONFIG_DIR/grafana/provisioning/dashboards" || { echo "❌ Failed to create grafana dashboards dir"; exit 1; }
+          mkdir -p "$CONFIG_DIR/nginx" || { echo "❌ Failed to create nginx dir"; exit 1; }
+
+          echo "✅ All directories created successfully"
+          ls -la "$CONFIG_DIR"
 
           # Generate nginx config with status endpoint
           cat > "$CONFIG_DIR/nginx/nginx.conf" << 'NGINX_EOF'
@@ -467,23 +491,38 @@ jobs:
 
           PROM_EOF
 
-          # Set proper permissions
-          chmod -R 644 "$CONFIG_DIR"
-          find "$CONFIG_DIR" -type d -exec chmod 755 {} \;
+          # Set proper permissions with explicit checking
+          echo "Setting file permissions..."
+          if [ -d "$CONFIG_DIR" ]; then
+            echo "Config directory exists, setting permissions..."
+            if ! chmod -R 644 "$CONFIG_DIR"/* 2>/dev/null; then
+              echo "⚠️ Some files may not have proper permissions, continuing..."
+            fi
+            if ! find "$CONFIG_DIR" -type d -exec chmod 755 {} \; 2>/dev/null; then
+              echo "⚠️ Some directories may not have proper permissions, continuing..."
+            fi
+            echo "✅ Permissions set"
+          else
+            echo "❌ Config directory does not exist: $CONFIG_DIR"
+            exit 1
+          fi
 
           # Set SELinux context if enabled
           if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
-            chcon -Rt container_file_t "$CONFIG_DIR" 2>/dev/null || true
+            echo "Setting SELinux context..."
+            chcon -Rt container_file_t "$CONFIG_DIR" 2>/dev/null || echo "⚠️ SELinux context setting failed, continuing..."
           fi
 
           echo "✅ Configuration files created"
+          echo "Final directory structure:"
+          find "$CONFIG_DIR" -type f -exec ls -la {} \;
           SETUP_PODS_EOF
 
           sudo tee /usr/local/bin/start-webserver-pod.sh > /dev/null << 'WEB_POD_EOF'
           #!/bin/bash
           set -e
 
-          cd /home/opc/webserver
+          cd /home/opc/webserver || { echo "ERROR: Cannot change to webserver directory"; exit 1; }
           source .env
 
           echo "🌐 Starting webserver pod..."
@@ -505,7 +544,7 @@ jobs:
             --pod webserver-pod \
             --name web \
             --restart unless-stopped \
-            --mount type=bind,source="/home/opc/webserver/config/nginx/nginx.conf",target=/etc/nginx/nginx.conf,ro \
+            --mount type=bind,source="$(pwd)/config/nginx/nginx.conf",target=/etc/nginx/nginx.conf,ro \
             --pull=always ghcr.io/verilypete/webserver:latest
 
           # Start nginx-exporter
@@ -534,7 +573,7 @@ jobs:
           #!/bin/bash
           set -e
 
-          cd /home/opc/webserver
+          cd /home/opc/webserver || { echo "ERROR: Cannot change to webserver directory"; exit 1; }
 
           echo "📊 Starting monitoring pod..."
 
@@ -554,7 +593,7 @@ jobs:
             --pod monitoring-pod \
             --name prometheus \
             --restart unless-stopped \
-            --mount type=bind,source="/home/opc/webserver/config/prometheus/prometheus.yml",target=/etc/prometheus/prometheus.yml,ro \
+            --mount type=bind,source="$(pwd)/config/prometheus/prometheus.yml",target=/etc/prometheus/prometheus.yml,ro \
             --mount type=volume,source=prometheus-data,target=/prometheus \
             docker.io/prom/prometheus:latest \
             --config.file=/etc/prometheus/prometheus.yml \
@@ -568,7 +607,7 @@ jobs:
             --name grafana \
             --restart unless-stopped \
             --mount type=volume,source=grafana-data,target=/var/lib/grafana \
-            --mount type=bind,source="/home/opc/webserver/config/grafana/provisioning",target=/etc/grafana/provisioning,ro \
+            --mount type=bind,source="$(pwd)/config/grafana/provisioning",target=/etc/grafana/provisioning,ro \
             --env GF_SECURITY_ADMIN_USER=admin \
             --env GF_SECURITY_ADMIN_PASSWORD=admin123 \
             --env GF_USERS_ALLOW_SIGN_UP=false \
