@@ -49,7 +49,7 @@ jobs:
         id: find_existing_instance
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?"display-name" == `${{ github.event.inputs.hostname }}`].{id: id, name: "display-name"} | [0]'
+          query: 'data[?\"display-name\" == `${{ github.event.inputs.hostname }}`].{id: id, name: \"display-name\"} | [0]'
           silent: false
 
       - name: Terminate existing instance if found
@@ -114,15 +114,17 @@ jobs:
         if: github.event.inputs.deploy_type == 'fresh_deploy'
         id: parse_instance_id
         run: |
-          INSTANCE_DATA="${{ steps.create_instance.outputs.output }}"
-          INSTANCE_ID=$(echo "$INSTANCE_DATA" | jq -r '.data.id // empty')
-          if [ -n "$INSTANCE_ID" ]; then
-            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-            echo "✅ Instance created with ID: $INSTANCE_ID"
-          else
-            echo "❌ Failed to parse instance ID from output"
-            exit 1
-          fi
+          # Remove outer quotes and unescape the JSON string
+          CLEAN_JSON=$(echo '${{ steps.create_instance.outputs.output }}' | sed 's/^"//; s/"$//; s/\\"/"/g')
+          INSTANCE_ID=$(echo "$CLEAN_JSON" | jq -r '.data.id')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
 
       - name: Wait for Tailscale connectivity (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
@@ -461,7 +463,7 @@ jobs:
         continue-on-error: true
         with:
           command: 'compute instance get --instance-id "${{ steps.parse_instance_id.outputs.instance_id }}"'
-          query: 'data.{id: id, name: "display-name", state: "lifecycle-state", shape: shape, region: region}'
+          query: 'data.{id: id, name: \"display-name\", state: \"lifecycle-state\", shape: shape, region: region}'
 
       - name: Final deployment summary
         run: |
@@ -499,7 +501,7 @@ jobs:
         timeout-minutes: 3
         with:
           command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
-          query: 'data[?contains("display-name", `webserver`) && "display-name" != `${{ github.event.inputs.hostname }}`].{Name:"display-name", ID:id, Created:"time-created"}'
+          query: 'data[?contains(\"display-name\", `webserver`) && \"display-name\" != `${{ github.event.inputs.hostname }}`].{Name:\"display-name\", ID:id, Created:\"time-created\"}'
           silent: false
 
       - name: Cleanup instructions
