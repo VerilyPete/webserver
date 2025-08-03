@@ -34,6 +34,9 @@ on:
 env:
   TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
 
+permissions:
+  contents: write
+
 jobs:
   backup:
     if: github.event.inputs.operation == 'backup'
