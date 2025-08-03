@@ -4,21 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: 'Operation to perform'
+        description: "Operation to perform"
         required: true
         type: choice
         options:
           - backup
           - restore
       target_environment:
-        description: 'Target environment'
+        description: "Target environment"
         required: true
         type: choice
         options:
           - webserver-prod
           - webserver-staging
       backup_source:
-        description: 'Backup source (for restore operations only)'
+        description: "Backup source (for restore operations only)"
         required: false
         type: choice
         options:
@@ -29,7 +29,7 @@ on:
         description: 'Specific backup name (if "select-specific" chosen)'
         required: false
         type: string
-        default: ''
+        default: ""
 
 env:
   TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
@@ -47,29 +47,50 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      - name: Setup SSH keys
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
       - name: Setup Tailscale
         uses: tailscale/github-action@v2
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:github-actions
+          hostname: github-actions-backup-${{ github.run_id }}
+          args: --ssh
 
       - name: Wait for Tailscale connection
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: |
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
-          echo "Waiting for Tailscale connection to $TARGET_HOST..."
+          echo "Waiting for Tailscale to establish connection..."
 
-          for i in {1..30}; do
-            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOST "echo 'Connected'" 2>/dev/null; then
+          # Wait for Tailscale to be ready
+          sleep 10
+
+          # Check Tailscale status
+          sudo tailscale status || true
+
+          echo "Attempting to connect to $TARGET_HOST..."
+
+          for i in {1..60}; do
+            if timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOST "echo 'SSH Connection successful'" 2>/dev/null; then
               echo "✅ Connected to $TARGET_HOST"
               break
             fi
-            if [ $i -eq 30 ]; then
-              echo "❌ Failed to connect to $TARGET_HOST"
+            if [ $i -eq 60 ]; then
+              echo "❌ Failed to connect to $TARGET_HOST after 60 attempts"
+              echo "Tailscale status:"
+              sudo tailscale status || true
+              echo "Tailscale ping test:"
+              sudo tailscale ping $TARGET_HOST || true
               exit 1
             fi
-            echo "Attempt $i/30 failed, waiting..."
-            sleep 2
+            echo "Attempt $i/60 failed, waiting 5 seconds..."
+            sleep 5
           done
 
       - name: Perform Grafana backup
@@ -264,6 +285,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      - name: Setup SSH keys
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
       - name: Determine backup to restore
         id: backup
         run: |
@@ -309,26 +337,40 @@ jobs:
       - name: Setup Tailscale
         uses: tailscale/github-action@v2
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:github-actions
+          hostname: github-actions-restore-${{ github.run_id }}
+          args: --ssh
 
       - name: Wait for Tailscale connection
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: |
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
-          echo "Waiting for Tailscale connection to $TARGET_HOST..."
+          echo "Waiting for Tailscale to establish connection..."
 
-          for i in {1..30}; do
-            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOST "echo 'Connected'" 2>/dev/null; then
+          # Wait for Tailscale to be ready
+          sleep 10
+
+          # Check Tailscale status
+          sudo tailscale status || true
+
+          echo "Attempting to connect to $TARGET_HOST..."
+
+          for i in {1..60}; do
+            if timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOST "echo 'SSH Connection successful'" 2>/dev/null; then
               echo "✅ Connected to $TARGET_HOST"
               break
             fi
-            if [ $i -eq 30 ]; then
-              echo "❌ Failed to connect to $TARGET_HOST"
+            if [ $i -eq 60 ]; then
+              echo "❌ Failed to connect to $TARGET_HOST after 60 attempts"
+              echo "Tailscale status:"
+              sudo tailscale status || true
+              echo "Tailscale ping test:"
+              sudo tailscale ping $TARGET_HOST || true
               exit 1
             fi
-            echo "Attempt $i/30 failed, waiting..."
-            sleep 2
+            echo "Attempt $i/60 failed, waiting 5 seconds..."
+            sleep 5
           done
 
       - name: Perform Grafana restore
