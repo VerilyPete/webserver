@@ -233,16 +233,51 @@ jobs:
           BACKUP_EOF
 
           # Execute backup on remote host
+          echo "📤 Uploading backup script..."
           scp -o StrictHostKeyChecking=no /tmp/backup_script.sh opc@$TARGET_HOST:/tmp/
-          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "chmod +x /tmp/backup_script.sh && /tmp/backup_script.sh /tmp/$BACKUP_NAME"
+
+          echo "🔄 Executing backup on remote host..."
+          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "chmod +x /tmp/backup_script.sh && /tmp/backup_script.sh /tmp/$BACKUP_NAME"; then
+            echo "✅ Backup script completed successfully"
+          else
+            echo "❌ Backup script failed"
+            exit 1
+          fi
+
+          # Verify backup was created on remote host
+          echo "🔍 Verifying backup was created..."
+          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "test -d /tmp/$BACKUP_NAME"; then
+            echo "✅ Backup directory exists on remote host"
+            ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "ls -la /tmp/$BACKUP_NAME/"
+          else
+            echo "❌ Backup directory not found on remote host"
+            exit 1
+          fi
 
           # Download backup to runner
-          scp -o StrictHostKeyChecking=no -r opc@$TARGET_HOST:/tmp/$BACKUP_NAME ./
+          echo "📥 Downloading backup to GitHub Actions runner..."
+          if scp -o StrictHostKeyChecking=no -r opc@$TARGET_HOST:/tmp/$BACKUP_NAME ./; then
+            echo "✅ Backup downloaded successfully"
+          else
+            echo "❌ Failed to download backup"
+            exit 1
+          fi
+
+          # Verify backup was downloaded
+          if [ -d "./$BACKUP_NAME" ]; then
+            echo "✅ Backup directory exists locally"
+            echo "Local backup contents:"
+            ls -la "./$BACKUP_NAME/"
+          else
+            echo "❌ Backup directory not found locally"
+            exit 1
+          fi
 
           # Cleanup remote temp files
+          echo "🧹 Cleaning up remote temporary files..."
           ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "rm -rf /tmp/backup_script.sh /tmp/$BACKUP_NAME"
 
-          echo "✅ Backup downloaded: $BACKUP_NAME"
+          echo "✅ Backup completed: $BACKUP_NAME"
 
       - name: Commit backup to repository
         run: |
@@ -250,16 +285,34 @@ jobs:
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BACKUP_NAME="grafana-backup-${TARGET_HOST}-${TIMESTAMP}"
 
+          # Verify backup directory exists before git operations
+          if [ ! -d "$BACKUP_NAME" ]; then
+            echo "❌ Backup directory $BACKUP_NAME not found for git commit"
+            echo "Current directory contents:"
+            ls -la
+            exit 1
+          fi
+
           # Configure git
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
+          # Check git status before adding
+          echo "📋 Git status before adding backup:"
+          git status
+
           # Add backup to git
+          echo "📝 Adding backup to git..."
           git add "$BACKUP_NAME/"
+
+          # Verify files were added
+          echo "📋 Git status after adding backup:"
+          git status
 
           # Create commit message with backup details
           DASHBOARD_COUNT=$(wc -l < "$BACKUP_NAME/dashboard-uids.txt" || echo "0")
 
+          echo "💾 Creating commit..."
           git commit -m "📊 Grafana backup: $BACKUP_NAME
 
           Source: $TARGET_HOST
@@ -269,6 +322,7 @@ jobs:
           Automated backup via GitHub Actions"
 
           # Push to repository
+          echo "📤 Pushing to repository..."
           git push origin main
 
           echo "✅ Backup committed to repository: $BACKUP_NAME"
