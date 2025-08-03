@@ -190,3 +190,31 @@ The new architecture enables:
 - Advanced logging aggregation
 
 This pod architecture provides a more robust, scalable, and maintainable infrastructure while preserving all existing functionality.
+
+## Documentation Updates
+
+**Date**: Updated based on implementation changes
+
+The main README.md has been updated to reflect the new pod-based architecture:
+
+### Updated Sections:
+- **Architecture Overview**: Now shows the complete pod network topology
+- **Container Architecture**: Detailed pod structure with monitoring-net
+- **Service Access**: Complete service matrix with URLs and credentials
+- **Monitoring & Maintenance**: Comprehensive monitoring infrastructure details
+- **Health Checks**: Pod-specific health verification commands
+- **Troubleshooting**: Pod networking and monitoring-specific issues
+- **Security**: Pod network isolation and multi-service security model
+- **Development**: Local pod testing with Podman
+- **API Reference**: Updated workflows and container image references
+- **Examples**: Pod architecture deployment and monitoring examples
+
+### Key Documentation Changes:
+1. **Complete Service Matrix**: All 7 services documented with access details
+2. **Pod Networking**: Internal pod communication and service discovery
+3. **Monitoring Stack**: Full Prometheus + Grafana setup documentation
+4. **Enhanced Troubleshooting**: Pod-specific debugging commands
+5. **Security Model**: Multi-layer security for pod architecture
+6. **Local Development**: Pod testing procedures for developers
+
+The documentation now accurately reflects the production implementation and provides comprehensive guidance for deployment, monitoring, and maintenance of the pod-based infrastructure.

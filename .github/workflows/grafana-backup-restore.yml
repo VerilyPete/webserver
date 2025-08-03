@@ -1,0 +1,422 @@
+name: 🗄️ Grafana Backup & Restore
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operation to perform'
+        required: true
+        type: choice
+        options:
+          - backup
+          - restore
+      target_environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - webserver-prod
+          - webserver-staging
+      backup_source:
+        description: 'Backup source (for restore operations only)'
+        required: false
+        type: choice
+        options:
+          - latest-prod
+          - latest-staging
+          - select-specific
+      specific_backup:
+        description: 'Specific backup name (if "select-specific" chosen)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
+
+jobs:
+  backup:
+    if: github.event.inputs.operation == 'backup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          tags: tag:github-actions
+
+      - name: Wait for Tailscale connection
+        timeout-minutes: 2
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          echo "Waiting for Tailscale connection to $TARGET_HOST..."
+
+          for i in {1..30}; do
+            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOST "echo 'Connected'" 2>/dev/null; then
+              echo "✅ Connected to $TARGET_HOST"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Failed to connect to $TARGET_HOST"
+              exit 1
+            fi
+            echo "Attempt $i/30 failed, waiting..."
+            sleep 2
+          done
+
+      - name: Perform Grafana backup
+        timeout-minutes: 5
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP_NAME="grafana-backup-${TARGET_HOST}-${TIMESTAMP}"
+
+          echo "🗄️ Creating backup: $BACKUP_NAME"
+
+          # Create backup script
+          cat > /tmp/backup_script.sh << 'BACKUP_EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          BACKUP_DIR="$1"
+
+          echo "=== Grafana Backup Starting ==="
+          echo "Backup directory: $BACKUP_DIR"
+
+          mkdir -p "$BACKUP_DIR"
+
+          # Check if Grafana is running
+          if ! curl -s http://localhost:3000/api/health >/dev/null 2>&1; then
+            echo "❌ Grafana not accessible at localhost:3000"
+            exit 1
+          fi
+
+          echo "✅ Grafana is accessible"
+
+          # Export dashboards via API
+          echo "Exporting dashboards via API..."
+          DASHBOARDS=$(curl -s -u admin:admin123 "http://localhost:3000/api/search?type=dash-db" 2>/dev/null || echo "[]")
+
+          if echo "$DASHBOARDS" | jq -e 'length > 0' >/dev/null 2>&1; then
+            echo "$DASHBOARDS" | jq -r '.[].uid' > "$BACKUP_DIR/dashboard-uids.txt"
+            echo "Found $(wc -l < "$BACKUP_DIR/dashboard-uids.txt") dashboards to backup"
+
+            # Export each dashboard
+            while read -r uid; do
+              if [ -n "$uid" ] && [ "$uid" != "null" ]; then
+                echo "Exporting dashboard: $uid"
+                curl -s -u admin:admin123 "http://localhost:3000/api/dashboards/uid/$uid" > "$BACKUP_DIR/dashboard-$uid.json"
+              fi
+            done < "$BACKUP_DIR/dashboard-uids.txt"
+
+            echo "✅ Dashboard export completed"
+          else
+            echo "⚠️  No dashboards found"
+            touch "$BACKUP_DIR/dashboard-uids.txt"
+          fi
+
+          # Backup datasources
+          echo "Backing up datasources..."
+          curl -s -u admin:admin123 "http://localhost:3000/api/datasources" > "$BACKUP_DIR/datasources.json" 2>/dev/null || echo "[]" > "$BACKUP_DIR/datasources.json"
+
+          # Backup Grafana settings
+          echo "Backing up Grafana settings..."
+          curl -s -u admin:admin123 "http://localhost:3000/api/org/preferences" > "$BACKUP_DIR/org-preferences.json" 2>/dev/null || echo "{}" > "$BACKUP_DIR/org-preferences.json"
+
+          # Create metadata file
+          cat > "$BACKUP_DIR/backup-metadata.json" << METADATA_EOF
+          {
+            "backup_date": "$(date -Iseconds)",
+            "source_host": "$(hostname)",
+            "grafana_version": "$(curl -s -u admin:admin123 http://localhost:3000/api/health 2>/dev/null | jq -r '.version // "unknown"')",
+            "dashboard_count": $(wc -l < "$BACKUP_DIR/dashboard-uids.txt"),
+            "backup_type": "api_export"
+          }
+          METADATA_EOF
+
+          # Create restore script
+          cat > "$BACKUP_DIR/restore.sh" << 'RESTORE_SCRIPT_EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          echo "=== Grafana Restore Starting ==="
+
+          # Wait for Grafana to be ready
+          echo "Waiting for Grafana to be ready..."
+          for i in {1..60}; do
+            if curl -s -u admin:admin123 http://localhost:3000/api/health >/dev/null 2>&1; then
+              echo "✅ Grafana is ready"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "❌ Grafana not ready after 2 minutes"
+              exit 1
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 2
+          done
+
+          # Restore datasources first
+          if [ -f "datasources.json" ] && [ "$(jq length datasources.json)" -gt 0 ]; then
+            echo "Restoring datasources..."
+            jq -c '.[]' datasources.json | while read -r datasource; do
+              echo "Importing datasource: $(echo "$datasource" | jq -r '.name')"
+              echo "$datasource" | curl -s -u admin:admin123 -H "Content-Type: application/json" \
+                -d @- "http://localhost:3000/api/datasources" >/dev/null || true
+            done
+            echo "✅ Datasources restored"
+          fi
+
+          # Restore dashboards
+          if [ -f "dashboard-uids.txt" ] && [ -s "dashboard-uids.txt" ]; then
+            echo "Restoring dashboards..."
+            while read -r uid; do
+              if [ -n "$uid" ] && [ -f "dashboard-$uid.json" ]; then
+                echo "Importing dashboard: $uid"
+
+                DASHBOARD_JSON=$(cat "dashboard-$uid.json" | jq '.dashboard')
+                if [ "$DASHBOARD_JSON" != "null" ]; then
+                  echo "{\"dashboard\": $DASHBOARD_JSON, \"overwrite\": true, \"inputs\": []}" | \
+                  curl -s -u admin:admin123 -H "Content-Type: application/json" \
+                  -d @- "http://localhost:3000/api/dashboards/db" >/dev/null
+
+                  if [ $? -eq 0 ]; then
+                    echo "✅ Imported: $uid"
+                  else
+                    echo "❌ Failed to import: $uid"
+                  fi
+                fi
+              fi
+            done < "dashboard-uids.txt"
+            echo "✅ Dashboard restore completed"
+          else
+            echo "⚠️  No dashboards to restore"
+          fi
+
+          echo "=== Grafana Restore Completed ==="
+          RESTORE_SCRIPT_EOF
+
+          chmod +x "$BACKUP_DIR/restore.sh"
+
+          echo "✅ Backup completed: $BACKUP_DIR"
+          echo "Backup contents:"
+          ls -la "$BACKUP_DIR/"
+          BACKUP_EOF
+
+          # Execute backup on remote host
+          scp -o StrictHostKeyChecking=no /tmp/backup_script.sh opc@$TARGET_HOST:/tmp/
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "chmod +x /tmp/backup_script.sh && /tmp/backup_script.sh /tmp/$BACKUP_NAME"
+
+          # Download backup to runner
+          scp -o StrictHostKeyChecking=no -r opc@$TARGET_HOST:/tmp/$BACKUP_NAME ./
+
+          # Cleanup remote temp files
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "rm -rf /tmp/backup_script.sh /tmp/$BACKUP_NAME"
+
+          echo "✅ Backup downloaded: $BACKUP_NAME"
+
+      - name: Commit backup to repository
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BACKUP_NAME="grafana-backup-${TARGET_HOST}-${TIMESTAMP}"
+
+          # Configure git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          # Add backup to git
+          git add "$BACKUP_NAME/"
+
+          # Create commit message with backup details
+          DASHBOARD_COUNT=$(wc -l < "$BACKUP_NAME/dashboard-uids.txt" || echo "0")
+
+          git commit -m "📊 Grafana backup: $BACKUP_NAME
+
+          Source: $TARGET_HOST
+          Timestamp: $TIMESTAMP
+          Dashboards: $DASHBOARD_COUNT
+
+          Automated backup via GitHub Actions"
+
+          # Push to repository
+          git push origin main
+
+          echo "✅ Backup committed to repository: $BACKUP_NAME"
+
+  restore:
+    if: github.event.inputs.operation == 'restore'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Determine backup to restore
+        id: backup
+        run: |
+          TARGET_ENV="${{ github.event.inputs.target_environment }}"
+          BACKUP_SOURCE="${{ github.event.inputs.backup_source }}"
+          SPECIFIC_BACKUP="${{ github.event.inputs.specific_backup }}"
+
+          echo "Target environment: $TARGET_ENV"
+          echo "Backup source: $BACKUP_SOURCE"
+
+          case "$BACKUP_SOURCE" in
+            "latest-prod")
+              BACKUP_DIR=$(find . -maxdepth 1 -name "grafana-backup-webserver-prod-*" -type d | sort -r | head -1)
+              ;;
+            "latest-staging")
+              BACKUP_DIR=$(find . -maxdepth 1 -name "grafana-backup-webserver-staging-*" -type d | sort -r | head -1)
+              ;;
+            "select-specific")
+              if [ -z "$SPECIFIC_BACKUP" ]; then
+                echo "❌ Specific backup name required when using 'select-specific'"
+                exit 1
+              fi
+              BACKUP_DIR="./$SPECIFIC_BACKUP"
+              ;;
+          esac
+
+          if [ -z "$BACKUP_DIR" ] || [ ! -d "$BACKUP_DIR" ]; then
+            echo "❌ No backup found matching criteria"
+            echo "Available backups:"
+            find . -maxdepth 1 -name "grafana-backup-*" -type d | sort -r
+            exit 1
+          fi
+
+          echo "✅ Selected backup: $BACKUP_DIR"
+          echo "backup_dir=$BACKUP_DIR" >> $GITHUB_OUTPUT
+
+          # Show backup metadata
+          if [ -f "$BACKUP_DIR/backup-metadata.json" ]; then
+            echo "Backup metadata:"
+            cat "$BACKUP_DIR/backup-metadata.json" | jq .
+          fi
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          tags: tag:github-actions
+
+      - name: Wait for Tailscale connection
+        timeout-minutes: 2
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          echo "Waiting for Tailscale connection to $TARGET_HOST..."
+
+          for i in {1..30}; do
+            if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOST "echo 'Connected'" 2>/dev/null; then
+              echo "✅ Connected to $TARGET_HOST"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "❌ Failed to connect to $TARGET_HOST"
+              exit 1
+            fi
+            echo "Attempt $i/30 failed, waiting..."
+            sleep 2
+          done
+
+      - name: Perform Grafana restore
+        timeout-minutes: 8
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          BACKUP_DIR="${{ steps.backup.outputs.backup_dir }}"
+
+          echo "🔄 Restoring Grafana from backup: $BACKUP_DIR"
+          echo "Target host: $TARGET_HOST"
+
+          # Upload backup to target host
+          scp -o StrictHostKeyChecking=no -r "$BACKUP_DIR" opc@$TARGET_HOST:/tmp/restore-backup
+
+          # Execute restore on remote host
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "cd /tmp/restore-backup && ./restore.sh"
+
+          # Cleanup remote temp files
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "rm -rf /tmp/restore-backup"
+
+          echo "✅ Restore completed successfully"
+
+      - name: Verify restore
+        timeout-minutes: 2
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          BACKUP_DIR="${{ steps.backup.outputs.backup_dir }}"
+
+          echo "🔍 Verifying restore..."
+
+          # Check Grafana health
+          if ! ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "curl -s http://localhost:3000/api/health" >/dev/null; then
+            echo "❌ Grafana health check failed"
+            exit 1
+          fi
+
+          # Get expected dashboard count
+          EXPECTED_DASHBOARDS=$(wc -l < "$BACKUP_DIR/dashboard-uids.txt" || echo "0")
+
+          # Get actual dashboard count
+          ACTUAL_DASHBOARDS=$(ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST \
+            "curl -s -u admin:admin123 'http://localhost:3000/api/search?type=dash-db' | jq length" 2>/dev/null || echo "0")
+
+          echo "Expected dashboards: $EXPECTED_DASHBOARDS"
+          echo "Actual dashboards: $ACTUAL_DASHBOARDS"
+
+          if [ "$ACTUAL_DASHBOARDS" -ge "$EXPECTED_DASHBOARDS" ]; then
+            echo "✅ Restore verification successful"
+            echo ""
+            echo "🎉 Grafana restore completed!"
+            echo "   Source backup: $BACKUP_DIR"
+            echo "   Target environment: $TARGET_HOST"
+            echo "   Dashboards restored: $ACTUAL_DASHBOARDS"
+            echo ""
+            echo "🌐 Access Grafana at: http://$TARGET_HOST:3000 (admin/admin123)"
+          else
+            echo "⚠️  Dashboard count mismatch - restore may be incomplete"
+            echo "   This could be normal if some dashboards failed to import"
+          fi
+
+  list-backups:
+    if: github.event.inputs.operation == 'list'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: List available backups
+        run: |
+          echo "📋 Available Grafana backups:"
+          echo ""
+
+          find . -maxdepth 1 -name "grafana-backup-*" -type d | sort -r | while read -r backup; do
+            if [ -f "$backup/backup-metadata.json" ]; then
+              echo "🗄️  $(basename "$backup")"
+              cat "$backup/backup-metadata.json" | jq -r '
+                "   Date: " + .backup_date +
+                "\n   Source: " + .source_host +
+                "\n   Dashboards: " + (.dashboard_count | tostring) +
+                "\n   Grafana: " + .grafana_version + "\n"
+              '
+            else
+              echo "🗄️  $(basename "$backup") (no metadata)"
+            fi
+          done
+
+          echo "💡 To restore a backup:"
+          echo "   1. Select 'restore' operation"
+          echo "   2. Choose target environment"
+          echo "   3. Select backup source or specify exact backup name"
