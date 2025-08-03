@@ -181,56 +181,115 @@ jobs:
 
           echo "=== Grafana Restore Starting ==="
 
+          # Show what files we have available for restore
+          echo "📋 Available restore files:"
+          ls -la
+
           # Wait for Grafana to be ready
           echo "Waiting for Grafana to be ready..."
           for i in {1..60}; do
-            if curl -s -u admin:admin123 http://localhost:3000/api/health >/dev/null 2>&1; then
+            HEALTH_RESPONSE=$(curl -s -u admin:admin123 http://localhost:3000/api/health 2>&1)
+            if echo "$HEALTH_RESPONSE" | grep -q "ok\|database"; then
               echo "✅ Grafana is ready"
+              echo "Health response: $HEALTH_RESPONSE"
               break
             fi
             if [ $i -eq 60 ]; then
               echo "❌ Grafana not ready after 2 minutes"
+              echo "Last health response: $HEALTH_RESPONSE"
               exit 1
             fi
-            echo "Waiting... ($i/60)"
+            echo "Waiting... ($i/60) - Health response: $HEALTH_RESPONSE"
             sleep 2
           done
 
+          # Show current state before restore
+          echo "📊 Current state before restore:"
+          CURRENT_DASHBOARDS=$(curl -s -u admin:admin123 "http://localhost:3000/api/search?type=dash-db" 2>/dev/null | jq length || echo "0")
+          echo "Current dashboards: $CURRENT_DASHBOARDS"
+
           # Restore datasources first
-          if [ -f "datasources.json" ] && [ "$(jq length datasources.json)" -gt 0 ]; then
-            echo "Restoring datasources..."
+          if [ -f "datasources.json" ] && [ "$(jq length datasources.json 2>/dev/null || echo 0)" -gt 0 ]; then
+            echo "🔧 Restoring datasources..."
+            DATASOURCE_COUNT=0
             jq -c '.[]' datasources.json | while read -r datasource; do
-              echo "Importing datasource: $(echo "$datasource" | jq -r '.name')"
-              echo "$datasource" | curl -s -u admin:admin123 -H "Content-Type: application/json" \
-                -d @- "http://localhost:3000/api/datasources" >/dev/null || true
+              DATASOURCE_NAME=$(echo "$datasource" | jq -r '.name')
+              echo "  📝 Importing datasource: $DATASOURCE_NAME"
+
+              RESPONSE=$(echo "$datasource" | curl -s -u admin:admin123 -H "Content-Type: application/json" \
+                -d @- "http://localhost:3000/api/datasources" -w "%{http_code}" 2>&1)
+
+              HTTP_CODE=$(echo "$RESPONSE" | tail -c 4)
+              RESPONSE_BODY=$(echo "$RESPONSE" | head -c -4)
+
+              if [[ "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
+                echo "    ✅ Success ($HTTP_CODE): $DATASOURCE_NAME"
+                DATASOURCE_COUNT=$((DATASOURCE_COUNT + 1))
+              else
+                echo "    ⚠️  Response ($HTTP_CODE): $RESPONSE_BODY"
+              fi
             done
-            echo "✅ Datasources restored"
+            echo "✅ Datasource restore completed"
+          else
+            echo "⚠️  No datasources to restore"
           fi
+
+          # Small delay to ensure datasources are ready
+          sleep 2
 
           # Restore dashboards
           if [ -f "dashboard-uids.txt" ] && [ -s "dashboard-uids.txt" ]; then
-            echo "Restoring dashboards..."
+            echo "📊 Restoring dashboards..."
+            TOTAL_DASHBOARDS=$(wc -l < "dashboard-uids.txt")
+            IMPORTED_COUNT=0
+            echo "  Total dashboards to import: $TOTAL_DASHBOARDS"
+
             while read -r uid; do
               if [ -n "$uid" ] && [ -f "dashboard-$uid.json" ]; then
-                echo "Importing dashboard: $uid"
+                echo "  📝 Importing dashboard: $uid"
 
-                DASHBOARD_JSON=$(cat "dashboard-$uid.json" | jq '.dashboard')
-                if [ "$DASHBOARD_JSON" != "null" ]; then
-                  echo "{\"dashboard\": $DASHBOARD_JSON, \"overwrite\": true, \"inputs\": []}" | \
-                  curl -s -u admin:admin123 -H "Content-Type: application/json" \
-                  -d @- "http://localhost:3000/api/dashboards/db" >/dev/null
-
-                  if [ $? -eq 0 ]; then
-                    echo "✅ Imported: $uid"
-                  else
-                    echo "❌ Failed to import: $uid"
-                  fi
+                # Validate dashboard JSON first
+                DASHBOARD_JSON=$(cat "dashboard-$uid.json" | jq '.dashboard' 2>/dev/null)
+                if [ "$DASHBOARD_JSON" = "null" ] || [ -z "$DASHBOARD_JSON" ]; then
+                  echo "    ❌ Invalid dashboard JSON for: $uid"
+                  continue
                 fi
+
+                # Create import payload and send to Grafana
+                IMPORT_PAYLOAD=$(echo "{\"dashboard\": $DASHBOARD_JSON, \"overwrite\": true, \"inputs\": []}")
+                RESPONSE=$(echo "$IMPORT_PAYLOAD" | curl -s -u admin:admin123 -H "Content-Type: application/json" \
+                  -d @- "http://localhost:3000/api/dashboards/db" -w "%{http_code}" 2>&1)
+
+                HTTP_CODE=$(echo "$RESPONSE" | tail -c 4)
+                RESPONSE_BODY=$(echo "$RESPONSE" | head -c -4)
+
+                if [[ "$HTTP_CODE" =~ ^2[0-9][0-9]$ ]]; then
+                  DASHBOARD_TITLE=$(echo "$DASHBOARD_JSON" | jq -r '.title // "Unknown"')
+                  echo "    ✅ Success ($HTTP_CODE): $uid - $DASHBOARD_TITLE"
+                  IMPORTED_COUNT=$((IMPORTED_COUNT + 1))
+                else
+                  echo "    ❌ Failed ($HTTP_CODE): $uid"
+                  echo "    Error details: $RESPONSE_BODY"
+                fi
+              else
+                echo "  ⚠️  Dashboard file not found: dashboard-$uid.json"
               fi
             done < "dashboard-uids.txt"
-            echo "✅ Dashboard restore completed"
+
+            echo "✅ Dashboard restore completed: $IMPORTED_COUNT/$TOTAL_DASHBOARDS imported"
           else
             echo "⚠️  No dashboards to restore"
+          fi
+
+          # Show final state after restore
+          echo "📊 Final state after restore:"
+          FINAL_DASHBOARDS=$(curl -s -u admin:admin123 "http://localhost:3000/api/search?type=dash-db" 2>/dev/null | jq length || echo "0")
+          echo "Final dashboard count: $FINAL_DASHBOARDS"
+
+          if [ "$FINAL_DASHBOARDS" -gt 0 ]; then
+            echo "📋 Restored dashboards:"
+            curl -s -u admin:admin123 "http://localhost:3000/api/search?type=dash-db" 2>/dev/null | \
+              jq -r '.[] | "  - " + .title + " (" + .uid + ")"' || echo "Could not list dashboards"
           fi
 
           echo "=== Grafana Restore Completed ==="
@@ -446,11 +505,35 @@ jobs:
           echo "🔄 Restoring Grafana from backup: $BACKUP_DIR"
           echo "Target host: $TARGET_HOST"
 
+          # Show what we're about to upload
+          echo "📋 Backup contents to upload:"
+          ls -la "$BACKUP_DIR/"
+
           # Upload backup to target host
+          echo "📤 Uploading backup to target host..."
           scp -o StrictHostKeyChecking=no -r "$BACKUP_DIR" opc@$TARGET_HOST:/tmp/restore-backup
 
-          # Execute restore on remote host
-          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "cd /tmp/restore-backup && ./restore.sh"
+          # Verify upload
+          echo "🔍 Verifying upload..."
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "ls -la /tmp/restore-backup/"
+
+          # Check Grafana status before restore
+          echo "🔍 Checking Grafana status before restore..."
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "curl -s http://localhost:3000/api/health || echo 'Grafana not ready'"
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "curl -s -u admin:admin123 'http://localhost:3000/api/search?type=dash-db' | jq 'length' || echo '0'" | xargs echo "Current dashboards:"
+
+          # Execute restore on remote host with full output
+          echo "🔄 Executing restore script..."
+          if ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "cd /tmp/restore-backup && bash -x ./restore.sh 2>&1"; then
+            echo "✅ Restore script completed"
+          else
+            echo "❌ Restore script failed"
+            exit 1
+          fi
+
+          # Check Grafana status after restore
+          echo "🔍 Checking Grafana status after restore..."
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "curl -s -u admin:admin123 'http://localhost:3000/api/search?type=dash-db' | jq 'length' || echo '0'" | xargs echo "Dashboards after restore:"
 
           # Cleanup remote temp files
           ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST "rm -rf /tmp/restore-backup"
@@ -481,7 +564,20 @@ jobs:
           echo "Expected dashboards: $EXPECTED_DASHBOARDS"
           echo "Actual dashboards: $ACTUAL_DASHBOARDS"
 
+          # Show detailed dashboard information for debugging
+          echo ""
+          echo "📊 Detailed dashboard information:"
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST \
+            "curl -s -u admin:admin123 'http://localhost:3000/api/search?type=dash-db' | jq -r '.[] | \"  - \" + .title + \" (\" + .uid + \")\"' || echo 'No dashboards found'"
+
+          # Check if any errors occurred during import
+          echo ""
+          echo "🔍 Checking for recent Grafana logs..."
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOST \
+            "podman logs grafana --tail 20 2>/dev/null || echo 'Could not retrieve logs'"
+
           if [ "$ACTUAL_DASHBOARDS" -ge "$EXPECTED_DASHBOARDS" ]; then
+            echo ""
             echo "✅ Restore verification successful"
             echo ""
             echo "🎉 Grafana restore completed!"
@@ -491,8 +587,11 @@ jobs:
             echo ""
             echo "🌐 Access Grafana at: http://$TARGET_HOST:3000 (admin/admin123)"
           else
+            echo ""
             echo "⚠️  Dashboard count mismatch - restore may be incomplete"
-            echo "   This could be normal if some dashboards failed to import"
+            echo "   Expected: $EXPECTED_DASHBOARDS"
+            echo "   Actual: $ACTUAL_DASHBOARDS"
+            echo "   Check the restore output above for specific import errors"
           fi
 
   list-backups:
