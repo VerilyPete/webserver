@@ -1,0 +1,7 @@
+{
+  "backup_date": "2025-08-03T03:11:58+00:00",
+  "source_host": "webserver-staging",
+  "grafana_version": "12.2.0-16636675413",
+  "dashboard_count": 2,
+  "backup_type": "api_export"
+}
