@@ -93,12 +93,20 @@ jobs:
             sleep 5
           done
 
-      - name: Perform Grafana backup
-        timeout-minutes: 5
+      - name: Generate backup name
+        id: backup_name
         run: |
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BACKUP_NAME="grafana-backup-${TARGET_HOST}-${TIMESTAMP}"
+          echo "backup_name=$BACKUP_NAME" >> $GITHUB_OUTPUT
+          echo "🗄️ Generated backup name: $BACKUP_NAME"
+
+      - name: Perform Grafana backup
+        timeout-minutes: 5
+        run: |
+          TARGET_HOST="${{ github.event.inputs.target_environment }}"
+          BACKUP_NAME="${{ steps.backup_name.outputs.backup_name }}"
 
           echo "🗄️ Creating backup: $BACKUP_NAME"
 
@@ -282,8 +290,7 @@ jobs:
       - name: Commit backup to repository
         run: |
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
-          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          BACKUP_NAME="grafana-backup-${TARGET_HOST}-${TIMESTAMP}"
+          BACKUP_NAME="${{ steps.backup_name.outputs.backup_name }}"
 
           # Verify backup directory exists before git operations
           if [ ! -d "$BACKUP_NAME" ]; then
