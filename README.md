@@ -720,9 +720,10 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
 - **Purpose**: Backup and restore Grafana dashboards and configuration
 - **Features**:
   - Cross-environment backup/restore (prod ↔ staging)
-  - Automated backup storage in source control
+  - Automated backup storage in `grafana-backups/` folder
   - Dashboard and datasource preservation
   - Timestamped backup naming
+  - Complete restore scripts included with each backup
 
 ### Container Images
 
@@ -873,12 +874,24 @@ providers:
 # Manual backup via SSH
 ssh opc@webserver-prod 'cd ~/webserver && ./scripts/grafana_backup_restore.sh backup'
 
-# List available backups
-ssh opc@webserver-prod 'cd ~/webserver && ./scripts/grafana_backup_restore.sh list'
+# List available backups in repository
+ls -la grafana-backups/
 
-# Restore specific backup
-ssh opc@webserver-staging 'cd ~/webserver && ./scripts/grafana_backup_restore.sh restore-api grafana-backup-webserver-prod-20240101-120000'
+# Download and restore specific backup
+scp -r grafana-backups/grafana-backup-webserver-prod-20240101-120000/ opc@webserver-staging:~/
+ssh opc@webserver-staging 'cd ~/grafana-backup-webserver-prod-20240101-120000 && ./restore.sh'
 ```
+
+### Grafana Backup Storage
+
+All Grafana backups are stored in the `grafana-backups/` directory with:
+- **Complete dashboard exports** in JSON format
+- **Datasource configurations** for easy restoration
+- **Automated restore scripts** for each backup
+- **Metadata files** with backup information
+- **Cross-environment compatibility** for prod ↔ staging transfers
+
+See `grafana-backups/README.md` for detailed backup management instructions.
 
 ### Integration with External Services
 

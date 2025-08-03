@@ -312,6 +312,9 @@ list_backups() {
     echo "   $0 backup                    - Create new backup"
     echo "   $0 restore-api <backup-dir>  - Restore via API"
     echo "   $0 restore-data <backup-dir> - Full data restore"
+    echo ""
+    echo "📁 Note: GitHub Actions stores backups in grafana-backups/ folder"
+    echo "   Use GitHub Actions workflow for automated cross-environment backups"
 }
 
 restore_api() {
@@ -364,8 +367,12 @@ case "${1:-backup}" in
         echo "  $0 restore-api grafana-backup-webserver-prod-20240101-120000"
         echo "  $0 restore-data grafana-backup-webserver-staging-20240101-120000"
         echo ""
+        echo "📁 Backup Storage:"
+        echo "   Local backups: Current directory"
+        echo "   GitHub backups: grafana-backups/ folder in repository"
+        echo ""
         echo "🌐 For automated backup/restore, use the GitHub Actions workflow:"
-        echo "   Actions → Grafana Backup & Restore"
+        echo "   Actions → Grafana Backup & Restore → stores in grafana-backups/"
         exit 1
         ;;
 esac

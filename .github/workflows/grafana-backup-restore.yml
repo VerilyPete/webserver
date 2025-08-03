@@ -102,16 +102,24 @@ jobs:
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BACKUP_NAME="grafana-backup-${TARGET_HOST}-${TIMESTAMP}"
+          BACKUP_PATH="grafana-backups/$BACKUP_NAME"
           echo "backup_name=$BACKUP_NAME" >> $GITHUB_OUTPUT
+          echo "backup_path=$BACKUP_PATH" >> $GITHUB_OUTPUT
           echo "🗄️ Generated backup name: $BACKUP_NAME"
+          echo "📁 Backup path: $BACKUP_PATH"
 
       - name: Perform Grafana backup
         timeout-minutes: 5
         run: |
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
           BACKUP_NAME="${{ steps.backup_name.outputs.backup_name }}"
+          BACKUP_PATH="${{ steps.backup_name.outputs.backup_path }}"
 
           echo "🗄️ Creating backup: $BACKUP_NAME"
+          echo "📁 Backup will be stored in: $BACKUP_PATH"
+
+          # Create grafana-backups directory if it doesn't exist
+          mkdir -p grafana-backups
 
           # Create backup script
           cat > /tmp/backup_script.sh << 'BACKUP_EOF'
@@ -326,7 +334,7 @@ jobs:
 
           # Download backup to runner
           echo "📥 Downloading backup to GitHub Actions runner..."
-          if scp -o StrictHostKeyChecking=no -r opc@$TARGET_HOST:/tmp/$BACKUP_NAME ./; then
+          if scp -o StrictHostKeyChecking=no -r opc@$TARGET_HOST:/tmp/$BACKUP_NAME ./grafana-backups/; then
             echo "✅ Backup downloaded successfully"
           else
             echo "❌ Failed to download backup"
@@ -334,10 +342,10 @@ jobs:
           fi
 
           # Verify backup was downloaded
-          if [ -d "./$BACKUP_NAME" ]; then
+          if [ -d "./$BACKUP_PATH" ]; then
             echo "✅ Backup directory exists locally"
             echo "Local backup contents:"
-            ls -la "./$BACKUP_NAME/"
+            ls -la "./$BACKUP_PATH/"
           else
             echo "❌ Backup directory not found locally"
             exit 1
@@ -353,12 +361,15 @@ jobs:
         run: |
           TARGET_HOST="${{ github.event.inputs.target_environment }}"
           BACKUP_NAME="${{ steps.backup_name.outputs.backup_name }}"
+          BACKUP_PATH="${{ steps.backup_name.outputs.backup_path }}"
 
           # Verify backup directory exists before git operations
-          if [ ! -d "$BACKUP_NAME" ]; then
-            echo "❌ Backup directory $BACKUP_NAME not found for git commit"
+          if [ ! -d "$BACKUP_PATH" ]; then
+            echo "❌ Backup directory $BACKUP_PATH not found for git commit"
             echo "Current directory contents:"
             ls -la
+            echo "Grafana backups directory:"
+            ls -la grafana-backups/ || echo "grafana-backups directory not found"
             exit 1
           fi
 
@@ -372,19 +383,20 @@ jobs:
 
           # Add backup to git
           echo "📝 Adding backup to git..."
-          git add "$BACKUP_NAME/"
+          git add "$BACKUP_PATH/"
 
           # Verify files were added
           echo "📋 Git status after adding backup:"
           git status
 
           # Create commit message with backup details
-          DASHBOARD_COUNT=$(wc -l < "$BACKUP_NAME/dashboard-uids.txt" || echo "0")
+          DASHBOARD_COUNT=$(wc -l < "$BACKUP_PATH/dashboard-uids.txt" || echo "0")
 
           echo "💾 Creating commit..."
           git commit -m "📊 Grafana backup: $BACKUP_NAME
 
           Source: $TARGET_HOST
+          Path: $BACKUP_PATH
           Timestamp: $TIMESTAMP
           Dashboards: $DASHBOARD_COUNT
 
@@ -427,24 +439,24 @@ jobs:
 
           case "$BACKUP_SOURCE" in
             "latest-prod")
-              BACKUP_DIR=$(find . -maxdepth 1 -name "grafana-backup-webserver-prod-*" -type d | sort -r | head -1)
+              BACKUP_DIR=$(find grafana-backups -maxdepth 1 -name "grafana-backup-webserver-prod-*" -type d | sort -r | head -1)
               ;;
             "latest-staging")
-              BACKUP_DIR=$(find . -maxdepth 1 -name "grafana-backup-webserver-staging-*" -type d | sort -r | head -1)
+              BACKUP_DIR=$(find grafana-backups -maxdepth 1 -name "grafana-backup-webserver-staging-*" -type d | sort -r | head -1)
               ;;
             "select-specific")
               if [ -z "$SPECIFIC_BACKUP" ]; then
                 echo "❌ Specific backup name required when using 'select-specific'"
                 exit 1
               fi
-              BACKUP_DIR="./$SPECIFIC_BACKUP"
+              BACKUP_DIR="./grafana-backups/$SPECIFIC_BACKUP"
               ;;
           esac
 
           if [ -z "$BACKUP_DIR" ] || [ ! -d "$BACKUP_DIR" ]; then
             echo "❌ No backup found matching criteria"
             echo "Available backups:"
-            find . -maxdepth 1 -name "grafana-backup-*" -type d | sort -r
+            find grafana-backups -maxdepth 1 -name "grafana-backup-*" -type d | sort -r
             exit 1
           fi
 
@@ -607,7 +619,7 @@ jobs:
           echo "📋 Available Grafana backups:"
           echo ""
 
-          find . -maxdepth 1 -name "grafana-backup-*" -type d | sort -r | while read -r backup; do
+          find grafana-backups -maxdepth 1 -name "grafana-backup-*" -type d | sort -r | while read -r backup; do
             if [ -f "$backup/backup-metadata.json" ]; then
               echo "🗄️  $(basename "$backup")"
               cat "$backup/backup-metadata.json" | jq -r '
