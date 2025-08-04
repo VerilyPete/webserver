@@ -1,7 +1,7 @@
 # 🚀 Webserver Infrastructure
 
 [![Build and Push](https://github.com/VerilyPete/webserver/actions/workflows/build-and-push.yml/badge.svg)](https://github.com/VerilyPete/webserver/actions/workflows/build-and-push.yml)
-[![Deploy](https://github.com/VerilyPete/webserver/actions/workflows/deploy-or-update-via-tailscale.yml/badge.svg)](https://github.com/VerilyPete/webserver/actions/workflows/deploy-or-update-via-tailscale.yml)
+[![Deploy](https://github.com/VerilyPete/webserver/actions/workflows/deploy-pods.yml/badge.svg)](https://github.com/VerilyPete/webserver/actions/workflows/deploy-pods.yml)
 
 A **containerized web server infrastructure** that provides automated deployment of web applications to Oracle Cloud Infrastructure (OCI) using Tailscale VPN for secure connectivity and GitHub Actions for CI/CD.
 
@@ -35,6 +35,7 @@ This infrastructure provides a complete solution for deploying web applications 
 - ✅ **Automated CI/CD pipeline** with build and deployment workflows
 - ✅ **Formspree integration** for contact forms
 - ✅ **Cloudflare Tunnel support** for public access
+- ✅ **Automatic cache purging** via Cloudflare API after deployments
 - ✅ **Cost-effective** ARM-based OCI instances
 
 ### What It Does
@@ -120,7 +121,7 @@ Before deploying this infrastructure, ensure you have:
 
 1. **Configure GitHub Secrets** (see [Configuration](#configuration) section)
 2. **Navigate to GitHub Actions** in your repository
-3. **Run the "Deploy or Update via Tailscale" workflow**
+3. **Run the "Deploy Pods" workflow**
 4. **Select parameters**:
    - **Deployment type**: `fresh_deploy`
    - **Target hostname**: `webserver-staging` or `webserver-prod`
@@ -129,7 +130,7 @@ Before deploying this infrastructure, ensure you have:
 ### For Updates
 
 1. **Navigate to GitHub Actions** in your repository
-2. **Run the "Deploy or Update via Tailscale" workflow**
+2. **Run the "Deploy Pods" workflow**
 3. **Select parameters**:
    - **Deployment type**: `update`
    - **Target hostname**: `webserver-staging` or `webserver-prod`
@@ -176,8 +177,12 @@ PRIVATE_TAILSCALE_KEY # Tailscale auth key for GitHub Actions
 
 #### Cloudflare (Optional)
 ```bash
-CLOUDFLARE_PROD_TUNNEL_TOKEN   # Production tunnel token
+CLOUDFLARE_PROD_TUNNEL_TOKEN    # Production tunnel token
 CLOUDFLARE_STAGING_TUNNEL_TOKEN # Staging tunnel token
+CLOUDFLARE_PROD_API_TOKEN       # Production API token for cache purging
+CLOUDFLARE_PROD_ZONE_ID         # Production zone ID for cache purging
+CLOUDFLARE_STAGING_API_TOKEN    # Staging API token for cache purging
+CLOUDFLARE_STAGING_ZONE_ID      # Staging zone ID for cache purging
 ```
 
 #### Application
@@ -237,6 +242,12 @@ APP_ENV=production
    - Checks all service endpoints
    - Confirms monitoring data collection
    - Verifies systemd service integration
+
+7. **Cloudflare Cache Purging**
+   - Automatically purges Cloudflare cache after successful deployment
+   - Uses environment-specific API credentials (prod/staging)
+   - Purges entire cache to ensure fresh content delivery
+   - Fails deployment if cache purge fails
 
 ### Deployment Timeline
 
@@ -698,7 +709,7 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
 - **Purpose**: Build and push container images
 - **Output**: Multi-platform images to GHCR
 
-#### Pod Architecture Deploy Workflow (`refactor-pods.yml`)
+#### Deploy Pods Workflow (`deploy-pods.yml`)
 - **Trigger**: Manual dispatch only
 - **Parameters**:
   - `deploy_type`: `update` or `fresh_deploy`
@@ -709,6 +720,11 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
   - Pod architecture deployment (webserver-pod, monitoring-pod)
   - Comprehensive health verification
   - Prometheus + Grafana monitoring setup
+  - **Automatic Cloudflare cache purging** after successful deployment
+    - Production deployments use `CLOUDFLARE_PROD_API_TOKEN` and `CLOUDFLARE_PROD_ZONE_ID`
+    - Staging deployments use `CLOUDFLARE_STAGING_API_TOKEN` and `CLOUDFLARE_STAGING_ZONE_ID`
+    - Purges entire cache using Cloudflare API v4
+    - Deployment fails if cache purge fails
 
 #### Grafana Backup & Restore Workflow (`grafana-backup-restore.yml`)
 - **Trigger**: Manual dispatch only
