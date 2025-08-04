@@ -822,6 +822,35 @@ jobs:
 
           echo "🎉 Pod architecture verification completed"
 
+      - name: Purge Cloudflare Cache
+        run: |
+          TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
+
+          # Determine Cloudflare API credentials based on hostname
+          if [ "$TARGET_HOSTNAME" = "webserver-prod" ]; then
+            CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_PROD_API_TOKEN }}"
+            CLOUDFLARE_ZONE_ID="${{ secrets.CLOUDFLARE_PROD_ZONE_ID }}"
+            echo "Using production Cloudflare credentials"
+          else
+            CLOUDFLARE_API_TOKEN="${{ secrets.CLOUDFLARE_STAGING_API_TOKEN }}"
+            CLOUDFLARE_ZONE_ID="${{ secrets.CLOUDFLARE_STAGING_ZONE_ID }}"
+            echo "Using staging Cloudflare credentials"
+          fi
+
+          response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/purge_cache" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"purge_everything":true}')
+
+          echo "Cloudflare API Response: $response"
+
+          if echo "$response" | grep -q '"success": true'; then
+            echo "✅ Cache purged successfully"
+          else
+            echo "❌ Cache purge failed"
+            exit 1
+          fi
+
       - name: Display new instance info (fresh deploy)
         if: github.event.inputs.deploy_type == 'fresh_deploy'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
