@@ -9,13 +9,14 @@ on:
   workflow_dispatch:
     inputs:
       deploy_type:
-        description: "Pod Architecture Deployment - webserver-pod (nginx+cloudflared+nginx-exporter), monitoring-pod (prometheus+grafana), standalone (node-exporter+cadvisor+tailscale)"
+        description: "Deployment type: 'fresh_deploy' (new instance + full setup), 'update' (full infrastructure update), 'web_only_update' (web container only - fastest)"
         required: true
         default: "update"
         type: choice
         options:
           - "update"
           - "fresh_deploy"
+          - "web_only_update"
       hostname:
         description: "Target hostname"
         required: true
@@ -159,6 +160,79 @@ jobs:
             echo "Tailscale attempt $i/$MAX_ATTEMPTS failed, waiting 20 seconds..."
             sleep 20
           done
+
+      - name: Web-only update
+        if: github.event.inputs.deploy_type == 'web_only_update'
+        timeout-minutes: 3
+        run: |
+          # Use the selected hostname
+          TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
+          echo "Performing web-only update on $TARGET_HOSTNAME..."
+
+          # Quick SSH connectivity check via Tailscale
+          echo "Checking Tailscale SSH access to $TARGET_HOSTNAME..."
+          if ! timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$TARGET_HOSTNAME "echo 'SSH Ready'" 2>/dev/null; then
+            echo "❌ SSH connection failed"
+            exit 1
+          fi
+          echo "✅ SSH connection successful"
+
+          # Update web container only
+          ssh -o StrictHostKeyChecking=no opc@$TARGET_HOSTNAME "
+            set -e
+            echo '🌐 Updating web container...'
+
+            # Pull latest image
+            podman pull ghcr.io/verilypete/webserver:latest
+
+            # Stop and remove existing web container
+            podman stop web 2>/dev/null || echo 'Web container not running'
+            podman rm web 2>/dev/null || echo 'Web container already removed'
+
+            # Get the webserver pod configuration to maintain consistency
+            cd ~/webserver || { echo 'ERROR: webserver directory not found'; exit 1; }
+            source .env || { echo 'ERROR: .env file not found'; exit 1; }
+
+            # Regenerate nginx.conf with current Formspree endpoint
+            echo 'Updating nginx configuration with current Formspree endpoint...'
+            CONFIG_DIR=\"\$(pwd)/config\"
+            mkdir -p \"\$CONFIG_DIR/nginx\"
+
+            # Extract nginx.conf from latest image with Formspree substitution
+            podman run --rm --env FORMSPREE_ENDPOINT=\"\$FORMSPREE_ENDPOINT\" \\
+              ghcr.io/verilypete/webserver:latest \\
+              sh -c 'sed \"s|__FORMSPREE_ENDPOINT__|\$FORMSPREE_ENDPOINT|g\" /etc/nginx/nginx.conf' > \"\$CONFIG_DIR/nginx/nginx.conf\"
+
+            # Verify nginx config was created
+            if [ ! -f \"\$CONFIG_DIR/nginx/nginx.conf\" ]; then
+              echo 'ERROR: Failed to generate nginx.conf'
+              exit 1
+            fi
+
+            # Start new web container in existing pod
+            podman run -d \\
+              --pod webserver-pod \\
+              --name web \\
+              --restart unless-stopped \\
+              --mount type=bind,source=\"\$(pwd)/config/nginx/nginx.conf\",target=/etc/nginx/nginx.conf,ro \\
+              ghcr.io/verilypete/webserver:latest
+
+            # Verify web container is running
+            sleep 3
+            if ! podman ps --filter name=web --format '{{.Names}}' | grep -q '^web$'; then
+              echo '❌ Web container failed to start'
+              podman logs web || echo 'No logs available'
+              exit 1
+            fi
+
+            # Quick health check
+            if ! curl -f http://localhost:8081 >/dev/null 2>&1; then
+              echo '❌ Web server health check failed'
+              exit 1
+            fi
+
+            echo '✅ Web container updated successfully'
+          "
 
       - name: Setup infrastructure
         if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
@@ -823,6 +897,7 @@ jobs:
           echo "🎉 Pod architecture verification completed"
 
       - name: Purge Cloudflare Cache
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy' || github.event.inputs.deploy_type == 'web_only_update'
         run: |
           TARGET_HOSTNAME="${{ github.event.inputs.hostname }}"
 
@@ -868,6 +943,10 @@ jobs:
             echo "🆕 New instance created:"
             echo "   Instance ID: ${{ steps.parse_instance_id.outputs.instance_id }}"
             echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"
+          elif [ "${{ github.event.inputs.deploy_type }}" = "web_only_update" ]; then
+            echo "🚀 Web container updated:"
+            echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"
+            echo "   Updated: Web application only"
           else
             echo "🔄 Existing instance updated:"
             echo "   Tailscale Hostname: ${{ github.event.inputs.hostname }}"

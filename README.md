@@ -136,6 +136,19 @@ Before deploying this infrastructure, ensure you have:
    - **Target hostname**: `webserver-staging` or `webserver-prod`
 4. **Wait for completion** (typically ~40 seconds on a single OCPU Ampere A1 instance)
 
+### For Web-Only Updates
+
+For the fastest deployments when you only need to update the web application:
+
+1. **Navigate to GitHub Actions** in your repository
+2. **Run the "Deploy Pods" workflow**
+3. **Select parameters**:
+   - **Deployment type**: `web_only_update`
+   - **Target hostname**: `webserver-staging` or `webserver-prod`
+4. **Wait for completion** (typically ~10-15 seconds)
+
+**Note**: This option only updates the web container image and skips all infrastructure setup. Use this when you only have web application changes and no configuration updates.
+
 ### Access Your Deployment
 
 Once deployed, access your web server via:
@@ -252,7 +265,8 @@ APP_ENV=production
 ### Deployment Timeline
 
 - **Fresh Deploy**: ~5 minutes
-- **Update**: ~35 seconds
+- **Update**: ~40 seconds
+- **Web-Only Update**: ~10-15 seconds
 - **Build Time**: ~45 seconds (parallel)
 
 ## 🐳 Container Architecture
@@ -712,7 +726,7 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
 #### Deploy Pods Workflow (`deploy-pods.yml`)
 - **Trigger**: Manual dispatch only
 - **Parameters**:
-  - `deploy_type`: `update` or `fresh_deploy`
+  - `deploy_type`: `fresh_deploy`, `update`, or `web_only_update`
   - `hostname`: `webserver-staging` or `webserver-prod`
 - **Purpose**: Deploy complete pod-based monitoring infrastructure
 - **Features**:
@@ -725,6 +739,10 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
     - Staging deployments use `CLOUDFLARE_STAGING_API_TOKEN` and `CLOUDFLARE_STAGING_ZONE_ID`
     - Purges entire cache using Cloudflare API v4
     - Deployment fails if cache purge fails
+- **Deployment Types**:
+  - `fresh_deploy`: Creates new instance with complete infrastructure setup
+  - `update`: Updates existing instance with full infrastructure refresh
+  - `web_only_update`: Updates only the web container image (fastest option)
 
 #### Grafana Backup & Restore Workflow (`grafana-backup-restore.yml`)
 - **Trigger**: Manual dispatch only
