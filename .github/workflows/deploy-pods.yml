@@ -133,7 +133,7 @@ jobs:
           chmod 700 ~/.ssh
 
       - name: Setup Tailscale
-        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy'
+        if: github.event.inputs.deploy_type == 'update' || github.event.inputs.deploy_type == 'fresh_deploy' || github.event.inputs.deploy_type == 'web_only_update'
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
