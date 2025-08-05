@@ -25,10 +25,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          # If triggered by app repo, optionally checkout that code
-          repository: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.app_repo || github.repository }}
-          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.commit_sha || github.ref }}
+        # Always checkout infrastructure repo to get /web directory and Dockerfile
 
       - name: Log trigger source
         run: |
@@ -78,7 +75,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            COMMIT_SHA=${{ github.event.client_payload.commit_sha || github.sha }}
+            COMMIT_SHA=${{ github.event.client_payload.commit_sha || 'main' }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
