@@ -8,6 +8,7 @@ ARG REPO_URL=https://github.com/VerilyPete/peterhollmer.com.git
 ARG COMMIT_SHA
 
 RUN set -e && \
+    rm -rf /usr/share/nginx/html/* && \
     if [ -z "${COMMIT_SHA}" ]; then \
     git clone --depth=1 --branch main ${REPO_URL} /usr/share/nginx/html; \
     else \
