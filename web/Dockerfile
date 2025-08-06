@@ -7,21 +7,20 @@ RUN apk add --no-cache git curl
 ARG REPO_URL=https://github.com/VerilyPete/peterhollmer.com.git
 ARG COMMIT_SHA
 
-# Clone the repository and copy src contents to nginx html directory
-RUN git clone ${REPO_URL} /tmp/website && \
-    cd /tmp/website && \
-    git fetch origin ${COMMIT_SHA} && \
-    git checkout ${COMMIT_SHA} && \
-    mkdir -p /usr/share/nginx/html/src && \
-    if [ -d "/tmp/website/src" ]; then \
-    cp -r /tmp/website/src/* /usr/share/nginx/html/src/; \
+RUN set -e && \
+    if [ -z "${COMMIT_SHA}" ]; then \
+    git clone --depth=1 --branch main ${REPO_URL} /usr/share/nginx/html; && \
     else \
-    cp -r /tmp/website/* /usr/share/nginx/html/src/; \
+    git clone ${REPO_URL} /usr/share/nginx/html && \
+    cd /usr/share/nginx/html && \
+    git fetch origin && \
+    git checkout ${COMMIT_SHA}; \
     fi && \
-    rm -rf /tmp/website
+    rm -rf /usr/share/nginx/html/.git
 
 # Create default index page as fallback
-RUN if [ ! -f /usr/share/nginx/html/src/index.html ]; then \
+RUN mkdir -p /usr/share/nginx/html/src && \
+    if [ ! -f /usr/share/nginx/html/src/index.html ]; then \
     echo '<h1>Containerized Web Server</h1><p>Website content will be here</p>' > /usr/share/nginx/html/src/index.html; \
     fi
 
