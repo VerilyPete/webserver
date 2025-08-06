@@ -19,8 +19,8 @@ RUN set -e && \
     rm -rf /usr/share/nginx/html/.git
 
 # Create default index page as fallback
-RUN mkdir -p /usr/share/nginx/html/src && \
-    if [ ! -f /usr/share/nginx/html/src/index.html ]; then \
+RUN if [ ! -f /usr/share/nginx/html/src/index.html ]; then \
+    mkdir -p /usr/share/nginx/html/src && \
     echo '<h1>Containerized Web Server</h1><p>Website content will be here</p>' > /usr/share/nginx/html/src/index.html; \
     fi
 
