@@ -17,7 +17,13 @@ RUN set -e && \
     git fetch origin && \
     git checkout ${COMMIT_SHA}; \
     fi && \
-    rm -rf /usr/share/nginx/html/.git
+    rm -rf /usr/share/nginx/html/.git && \
+    rm -f /usr/share/nginx/html/.gitignore && \
+    rm -rf /usr/share/nginx/html/.github && \
+    rm -f /usr/share/nginx/html/.htmlvalidate.json && \
+    rm -rf /usr/share/nginx/html/.npmrc && \
+    rm -f /usr/share/nginx/html/README.md && \
+    rm -rf /usr/share/nginx/html/tests
 
 # Create default index page as fallback
 RUN if [ ! -f /usr/share/nginx/html/src/index.html ]; then \
