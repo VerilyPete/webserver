@@ -9,7 +9,7 @@ ARG COMMIT_SHA
 
 RUN set -e && \
     if [ -z "${COMMIT_SHA}" ]; then \
-    git clone --depth=1 --branch main ${REPO_URL} /usr/share/nginx/html; && \
+    git clone --depth=1 --branch main ${REPO_URL} /usr/share/nginx/html; \
     else \
     git clone ${REPO_URL} /usr/share/nginx/html && \
     cd /usr/share/nginx/html && \
