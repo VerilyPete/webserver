@@ -3,7 +3,7 @@
 # It deploys a new instance via OCI CLI if one does not exist, or updates an existing instance if one does exist
 # Cloud-init is used to bootstrap tailscale, at which point Github Actions takes over and finishes the deployment
 
-name: Deploy or Update via Tailscale
+name: Deploy or Update via Tailscale (Deprecated)
 
 on:
   workflow_dispatch:
