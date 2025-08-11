@@ -515,10 +515,6 @@ jobs:
               static_configs:
                 - targets: ['host.containers.internal:9100']
 
-            - job_name: 'cadvisor'
-              static_configs:
-                - targets: ['host.containers.internal:8080']
-
             - job_name: 'nginx-exporter'
               static_configs:
                 - targets: ['host.containers.internal:9113']
@@ -687,8 +683,8 @@ jobs:
           echo "🔧 Starting standalone monitoring services..."
 
           # Stop existing services
-          podman stop node-exporter cadvisor 2>/dev/null || true
-          podman rm node-exporter cadvisor 2>/dev/null || true
+          podman stop node-exporter 2>/dev/null || true
+          podman rm node-exporter 2>/dev/null || true
 
           # Start node-exporter
           podman run -d \
@@ -707,20 +703,7 @@ jobs:
             --path.sysfs=/host/sys \
             --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($$|/)'
 
-          # Start cAdvisor
-          podman run -d \
-            --name cadvisor \
-            --restart unless-stopped \
-            --network host \
-            --privileged \
-            --mount type=bind,source=/,target=/rootfs,ro \
-            --mount type=bind,source=/var/run,target=/var/run,ro \
-            --mount type=bind,source=/sys,target=/sys,ro \
-            --mount type=bind,source=/var/lib/containers,target=/var/lib/containers,ro \
-            --device /dev/kmsg:/dev/kmsg \
-            gcr.io/cadvisor/cadvisor:latest \
-            --port=8080 \
-            --housekeeping_interval=30s
+          # cAdvisor removed
 
           echo "✅ Standalone services started"
           STANDALONE_EOF
@@ -798,7 +781,6 @@ jobs:
           curl -s -o /dev/null -w "Prometheus (9090): %{http_code}\n" http://localhost:9090 || echo "Prometheus: failed"
           curl -s -o /dev/null -w "Grafana (3000): %{http_code}\n" http://localhost:3000 || echo "Grafana: failed"
           curl -s -o /dev/null -w "Node Exporter (9100): %{http_code}\n" http://localhost:9100/metrics || echo "Node Exporter: failed"
-          curl -s -o /dev/null -w "cAdvisor (8080): %{http_code}\n" http://localhost:8080/metrics || echo "cAdvisor: failed"
           curl -s -o /dev/null -w "nginx-exporter (9113): %{http_code}\n" http://localhost:9113/metrics || echo "nginx-exporter: failed"
           curl -s -o /dev/null -w "nginx status (8082): %{http_code}\n" http://localhost:8082/nginx_status || echo "nginx status: failed"
 
@@ -810,7 +792,6 @@ jobs:
             echo "  Prometheus: http://localhost:9090"
             echo "  Grafana: http://localhost:3000 (admin/admin123)"
             echo "  Node Exporter: http://localhost:9100/metrics"
-            echo "  cAdvisor: http://localhost:8080"
             echo "  nginx metrics: http://localhost:9113/metrics"
             echo "  nginx status: http://localhost:8082/nginx_status"
           else

@@ -19,7 +19,6 @@ monitoring-net (10.10.0.0/24)
 
 host network (for system access)
 ├── node-exporter (system metrics) → port 9100
-├── cadvisor (container metrics) → port 8080
 └── tailscale (VPN - unchanged)
 ```
 
@@ -86,7 +85,7 @@ After deployment, services are accessible at:
 | Prometheus | http://localhost:9090 | - |
 | Grafana | http://localhost:3000 | admin/admin123 |
 | Node Exporter | http://localhost:9100/metrics | - |
-| cAdvisor | http://localhost:8080 | - |
+
 | nginx Metrics | http://localhost:9113/metrics | - |
 | nginx Status | http://localhost:8082/nginx_status | - |
 
@@ -126,7 +125,7 @@ The workflow now:
    - Grafana with auto-provisioning
 
 3. **Deploys services in order**
-   - Standalone services (node-exporter, cadvisor)
+   - Standalone services (node-exporter)
    - Webserver pod (nginx, nginx-exporter, cloudflared)
    - Monitoring pod (prometheus, grafana)
 

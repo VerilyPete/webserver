@@ -82,7 +82,6 @@ The infrastructure automatically:
                                                 │ ┌─────────────────────────────┐ │
                                                 │ │ tailscale │ node-exporter   │ │
                                                 │ │           │ :9100           │ │
-                                                │ │           │ cadvisor :8080  │ │
                                                 │ └─────────────────────────────┘ │
                                                 └─────────────────────────────────┘
 ```
@@ -285,7 +284,6 @@ monitoring-net (10.10.0.0/24)
 
 host network (for system access)
 ├── node-exporter (system metrics) → port 9100
-├── cadvisor (container metrics) → port 8080
 └── tailscale (VPN - unchanged)
 ```
 
@@ -325,7 +323,7 @@ host network (for system access)
 
 #### System Monitoring Services (host network)
 - **node-exporter**: System metrics (CPU, memory, disk)
-- **cadvisor**: Container metrics and performance
+
 - **tailscale**: VPN connectivity (unchanged)
 
 #### Cloudflared Container (Optional)
@@ -357,7 +355,7 @@ After deployment, services are accessible at:
 | Prometheus | http://localhost:9090 | - | Metrics collection and querying |
 | Grafana | http://localhost:3000 | admin/admin123 | Dashboards and visualization |
 | Node Exporter | http://localhost:9100/metrics | - | System metrics |
-| cAdvisor | http://localhost:8080 | - | Container metrics |
+
 | nginx Metrics | http://localhost:9113/metrics | - | Web server metrics |
 | nginx Status | http://localhost:8082/nginx_status | - | Web server status |
 
@@ -371,10 +369,7 @@ The monitoring system collects metrics from multiple sources:
    - Disk I/O and space
    - Network statistics
 
-2. **Container Metrics** (cAdvisor)
-   - Container resource usage
-   - Pod performance data
-   - Container lifecycle events
+
 
 3. **Web Server Metrics** (nginx-exporter)
    - HTTP request rates
@@ -404,7 +399,7 @@ ssh opc@[hostname] 'curl -s http://localhost:8081'           # Website
 ssh opc@[hostname] 'curl -s http://localhost:9090/-/healthy' # Prometheus
 ssh opc@[hostname] 'curl -s http://localhost:3000/api/health' # Grafana
 ssh opc@[hostname] 'curl -s http://localhost:9100/metrics | head -5' # Node exporter
-ssh opc@[hostname] 'curl -s http://localhost:8080/metrics | head -5' # cAdvisor
+
 ssh opc@[hostname] 'curl -s http://localhost:9113/metrics | head -5' # nginx exporter
 
 # Check logs
@@ -539,7 +534,6 @@ ssh opc@[hostname] 'systemctl --user restart tailscale.service'
 # Check specific container logs
 ssh opc@[hostname] 'podman logs nginx-exporter'
 ssh opc@[hostname] 'podman logs node-exporter'
-ssh opc@[hostname] 'podman logs cadvisor'
 
 # Check service status
 ssh opc@[hostname] 'systemctl --user status webserver-pod.service'
@@ -607,7 +601,7 @@ ssh opc@[hostname] 'curl -s -o /dev/null -w "Web: %{http_code}\n" http://localho
 ssh opc@[hostname] 'curl -s -o /dev/null -w "Prometheus: %{http_code}\n" http://localhost:9090'
 ssh opc@[hostname] 'curl -s -o /dev/null -w "Grafana: %{http_code}\n" http://localhost:3000'
 ssh opc@[hostname] 'curl -s -o /dev/null -w "Node Exporter: %{http_code}\n" http://localhost:9100/metrics'
-ssh opc@[hostname] 'curl -s -o /dev/null -w "cAdvisor: %{http_code}\n" http://localhost:8080/metrics'
+
 ssh opc@[hostname] 'curl -s -o /dev/null -w "nginx Exporter: %{http_code}\n" http://localhost:9113/metrics'
 
 # Pod networking tests
@@ -767,7 +761,7 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
 - **Grafana**: `grafana/grafana:latest`
 - **nginx Exporter**: `nginx/nginx-prometheus-exporter:latest`
 - **Node Exporter**: `prom/node-exporter:latest`
-- **cAdvisor**: `gcr.io/cadvisor/cadvisor:latest`
+
 - **Cloudflared**: `cloudflare/cloudflared:latest` (optional)
 - **Tailscale**: `tailscale/tailscale:latest`
 
@@ -836,7 +830,7 @@ curl http://localhost:3000/api/health         # Grafana health
 # Monitor metrics collection
 curl http://localhost:9100/metrics | grep node_cpu
 curl http://localhost:9113/metrics | grep nginx_http
-curl http://localhost:8080/metrics | grep container_cpu
+
 
 # Test pod networking
 podman exec -it prometheus curl http://webserver-pod:9113/metrics
