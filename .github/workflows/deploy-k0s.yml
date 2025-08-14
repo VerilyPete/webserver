@@ -101,7 +101,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?contains("display-name", `k8s-controller`)][0].id'
+          query: 'data[?contains(\"display-name\", `k8s-controller`)][0].id'
           silent: false
 
       - name: Terminate controller instance
