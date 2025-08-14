@@ -194,17 +194,26 @@ jobs:
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --display-name "k8s-worker-1-data"
             --lifecycle-state AVAILABLE
+            --raw-output
           query: 'data[0].id'
           silent: false
         continue-on-error: true
 
-      - name: Delete existing worker-1 data volume
+      - name: Clean existing worker-1 volume ID
         if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null'
+        id: clean_existing_volume_id
+        run: |
+          VOLUME_ID=$(echo "${{ steps.find_worker1_volume.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned existing volume ID: $VOLUME_ID"
+
+      - name: Delete existing worker-1 data volume
+        if: steps.clean_existing_volume_id.outputs.volume_id != ''
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             bv volume delete
-            --volume-id "${{ steps.find_worker1_volume.outputs.output }}"
+            --volume-id "${{ steps.clean_existing_volume_id.outputs.volume_id }}"
             --force
           silent: false
 
