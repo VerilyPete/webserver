@@ -247,8 +247,6 @@ jobs:
             --display-name "k8s-worker-1-data"
             --size-in-gbs 50
             --wait-for-state AVAILABLE
-            --query 'data.id'
-            --raw-output
           silent: false
 
       - name: Create K8s Worker-1 Instance
@@ -268,28 +266,36 @@ jobs:
             --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-1\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
             --wait-for-state RUNNING
             --max-wait-seconds 600
-            --query 'data.id'
-            --raw-output
           silent: false
 
-      - name: Clean worker-1 and volume IDs for attachment
-        id: clean_attachment_ids
+      - name: Parse worker-1 and volume IDs for attachment
+        id: parse_attachment_ids
         run: |
-          WORKER_ID=$(echo "${{ steps.create_worker1.outputs.output }}" | tr -d '\n\r' | tr -d '"')
-          VOLUME_ID=$(echo "${{ steps.create_volume.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          # Parse JSON output to extract IDs
+          WORKER_OUTPUT='${{ steps.create_worker1.outputs.output }}'
+          VOLUME_OUTPUT='${{ steps.create_volume.outputs.output }}'
+          
+          # Clean and parse JSON (remove outer quotes and unescape)
+          WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          
+          # Extract IDs using jq
+          WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
+          VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
+          
           echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
           echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
-          echo "Cleaned worker ID: $WORKER_ID"
-          echo "Cleaned volume ID: $VOLUME_ID"
+          echo "Parsed worker ID: $WORKER_ID"
+          echo "Parsed volume ID: $VOLUME_ID"
 
       - name: Attach block volume to worker-1
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             compute volume-attachment attach
-            --instance-id "${{ steps.clean_attachment_ids.outputs.worker_id }}"
+            --instance-id "${{ steps.parse_attachment_ids.outputs.worker_id }}"
             --type paravirtualized
-            --volume-id "${{ steps.clean_attachment_ids.outputs.volume_id }}"
+            --volume-id "${{ steps.parse_attachment_ids.outputs.volume_id }}"
             --wait-for-state ATTACHED
           silent: false
 
