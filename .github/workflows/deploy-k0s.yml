@@ -55,7 +55,6 @@ jobs:
       - name: Debug check_existing output
         run: |
           echo "Raw output: '${{ steps.check_existing.outputs.output }}'"
-          echo "Output length: ${#steps.check_existing.outputs.output}"
           echo "Output type check:"
           if [ "${{ steps.check_existing.outputs.output }}" = "[]" ]; then
             echo "  - Matches '[]'"
@@ -69,7 +68,7 @@ jobs:
           fi
 
       - name: Clean up existing K8s instances and Tailscale entries
-        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         run: |
           echo "Found existing K8s instances, cleaning up..."
 
@@ -94,7 +93,7 @@ jobs:
            echo "Tailscale cleanup complete"
 
       - name: Find controller instance ID
-        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: find_controller_id
         with:
@@ -116,7 +115,7 @@ jobs:
           silent: false
 
       - name: Find worker-1 instance ID
-        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: find_worker1_id
         with:
@@ -138,7 +137,7 @@ jobs:
           silent: false
 
       - name: Find worker-2 instance ID
-        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: find_worker2_id
         with:
