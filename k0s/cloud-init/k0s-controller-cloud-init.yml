@@ -190,17 +190,25 @@ write_files:
       echo "=== Tailscale Installation Complete ==="
 
 runcmd:
-  # Set hostname first
+  # Set hostname first using custom metadata
   - |
-    HOSTNAME=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata/HOSTNAME)
-    hostnamectl set-hostname $HOSTNAME
-    echo "Set hostname to: $HOSTNAME"
+    HOSTNAME=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata | jq -r '.HOSTNAME')
+    if [ "$HOSTNAME" != "null" ] && [ -n "$HOSTNAME" ]; then
+      hostnamectl set-hostname $HOSTNAME
+      echo "Set hostname to: $HOSTNAME"
+      # Also update /etc/hostname for persistence
+      echo "$HOSTNAME" > /etc/hostname
+    else
+      echo "ERROR: Could not retrieve HOSTNAME from custom metadata"
+      exit 1
+    fi
 
   # Setup Tailscale for connectivity
   - |
-    # Get metadata from OCI metadata service
-    export TAILSCALE_AUTH_KEY=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata/TAILSCALE_AUTH_KEY)
-    export HOSTNAME=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata/HOSTNAME)
+    # Get metadata from OCI metadata service (custom metadata)
+    METADATA=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata)
+    export TAILSCALE_AUTH_KEY=$(echo "$METADATA" | jq -r '.TAILSCALE_AUTH_KEY')
+    export HOSTNAME=$(echo "$METADATA" | jq -r '.HOSTNAME')
     
     echo "Setting up Tailscale with hostname: $HOSTNAME"
     echo "Auth key length: ${#TAILSCALE_AUTH_KEY}"

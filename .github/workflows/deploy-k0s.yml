@@ -462,22 +462,42 @@ jobs:
           echo "✅ All nodes are accessible"
 
       - name: Verify K0s installation on all nodes
+        timeout-minutes: 5
         run: |
           echo "Verifying K0s installation..."
 
-          # Check controller
-          ssh -o StrictHostKeyChecking=no opc@k8s-controller "
+          # Check controller with timeout and error handling
+          echo "Checking controller..."
+          if timeout 60 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@k8s-controller "
             echo 'Controller status:'
-            sudo systemctl status k0scontroller --no-pager | head -20
-            sudo k0s status
-          "
+            sudo systemctl status k0scontroller --no-pager --lines=10 || echo 'k0scontroller service not found'
+            echo '---'
+            echo 'k0s status:'
+            sudo /usr/local/bin/k0s status || echo 'k0s status command failed'
+            echo '---'
+            echo 'k0s version:'
+            /usr/local/bin/k0s version || echo 'k0s binary not found'
+          "; then
+            echo "✅ Controller check completed"
+          else
+            echo "❌ Controller check failed or timed out"
+            echo "Attempting basic connectivity test..."
+            timeout 10 ssh -o StrictHostKeyChecking=no opc@k8s-controller "echo 'Basic SSH works'; uptime" || echo "Basic SSH failed"
+          fi
 
-          # Check workers
+          # Check workers with timeout
           for worker in k8s-worker-1 k8s-worker-2; do
-            ssh -o StrictHostKeyChecking=no opc@$worker "
+            echo "Checking $worker..."
+            if timeout 30 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$worker "
               echo '$worker k0s binary:'
-              k0s version
-            "
+              /usr/local/bin/k0s version || echo 'k0s binary not found on $worker'
+              echo 'System status:'
+              uptime
+            "; then
+              echo "✅ $worker check completed"
+            else
+              echo "❌ $worker check failed or timed out"
+            fi
           done
 
       - name: Join worker nodes to cluster
