@@ -148,14 +148,30 @@ write_files:
 
 runcmd:
   # Set hostname first
-  - hostnamectl set-hostname ${HOSTNAME}
+  - |
+    HOSTNAME=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata/HOSTNAME)
+    hostnamectl set-hostname $HOSTNAME
+    echo "Set hostname to: $HOSTNAME"
 
   # Setup Tailscale for connectivity
   - |
-    export TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}"
-    export HOSTNAME="${HOSTNAME}"
+    # Get metadata from OCI metadata service
+    export TAILSCALE_AUTH_KEY=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata/TAILSCALE_AUTH_KEY)
+    export HOSTNAME=$(curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/metadata/HOSTNAME)
+    
     echo "Setting up Tailscale with hostname: $HOSTNAME"
     echo "Auth key length: ${#TAILSCALE_AUTH_KEY}"
+    
+    if [ -z "$TAILSCALE_AUTH_KEY" ] || [ "$TAILSCALE_AUTH_KEY" = "null" ]; then
+      echo "ERROR: Failed to retrieve TAILSCALE_AUTH_KEY from metadata"
+      exit 1
+    fi
+    
+    if [ -z "$HOSTNAME" ] || [ "$HOSTNAME" = "null" ]; then
+      echo "ERROR: Failed to retrieve HOSTNAME from metadata"
+      exit 1
+    fi
+    
     /usr/local/bin/install-tailscale.sh
 
   # Give Tailscale time to establish connection and verify
