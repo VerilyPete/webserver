@@ -382,10 +382,18 @@ jobs:
             MAX_ATTEMPTS=30
             for i in $(seq 1 $MAX_ATTEMPTS); do
               if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no opc@$node "echo '✅ $node is ready'" 2>/dev/null; then
+                echo "✅ $node is accessible"
                 break
               fi
               if [ $i -eq $MAX_ATTEMPTS ]; then
                 echo "❌ Failed to connect to $node after $MAX_ATTEMPTS attempts"
+                echo "🔍 Debugging information:"
+                echo "Tailscale status:"
+                tailscale status || echo "Failed to get tailscale status"
+                echo "Attempting to ping $node:"
+                ping -c 3 $node || echo "Ping failed"
+                echo "Checking if $node appears in Tailscale:"
+                tailscale status | grep $node || echo "$node not found in tailscale status"
                 exit 1
               fi
               echo "  Attempt $i/$MAX_ATTEMPTS - waiting 20s..."

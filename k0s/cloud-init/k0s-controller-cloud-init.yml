@@ -64,10 +64,21 @@ write_files:
 
       # Wait for k0s to be ready
       echo "Waiting for k0s to be ready..."
-      while ! k0s kubectl get nodes 2>/dev/null; do
-        echo "Waiting for API server..."
+      for i in {1..24}; do  # 2 minute timeout
+        if k0s kubectl get nodes 2>/dev/null; then
+          echo "K0s API server is ready!"
+          break
+        fi
+        echo "Waiting for API server... (attempt $i/24)"
         sleep 5
       done
+      
+      # Verify API server is actually responding
+      if ! k0s kubectl get nodes 2>/dev/null; then
+        echo "ERROR: K0s API server failed to start properly"
+        systemctl status k0scontroller --no-pager -l
+        exit 1
+      fi
 
       # Create worker join tokens
       echo "Creating worker join tokens..."
@@ -138,8 +149,18 @@ runcmd:
   # Setup Tailscale for connectivity
   - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
 
-  # Give Tailscale time to establish connection
-  - sleep 10
+  # Give Tailscale time to establish connection and verify
+  - |
+    echo "Waiting for Tailscale to be ready..."
+    for i in {1..30}; do  # 30 second timeout
+      if tailscale status >/dev/null 2>&1; then
+        echo "Tailscale is connected!"
+        tailscale status
+        break
+      fi
+      echo "Waiting for Tailscale... (attempt $i/30)"
+      sleep 1
+    done
 
   # Setup k0s controller
   - /usr/local/bin/setup-k0s-controller.sh

@@ -127,8 +127,18 @@ runcmd:
   # Setup Tailscale for connectivity
   - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
 
-  # Give Tailscale time to establish connection
-  - sleep 10
+  # Give Tailscale time to establish connection and verify
+  - |
+    echo "Waiting for Tailscale to be ready..."
+    for i in {1..30}; do  # 30 second timeout
+      if tailscale status >/dev/null 2>&1; then
+        echo "Tailscale is connected!"
+        tailscale status
+        break
+      fi
+      echo "Waiting for Tailscale... (attempt $i/30)"
+      sleep 1
+    done
 
   # Setup k0s worker
   - /usr/local/bin/setup-k0s-worker.sh
