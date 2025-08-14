@@ -373,31 +373,69 @@ jobs:
           tags: tag:private-deploy
 
       - name: Wait for all nodes to be accessible
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           echo "Waiting for all nodes to be accessible via Tailscale..."
 
           for node in k8s-controller k8s-worker-1 k8s-worker-2; do
             echo "Checking $node..."
-            MAX_ATTEMPTS=30
+            MAX_ATTEMPTS=45  # Increased attempts since cloud-init can take time
             for i in $(seq 1 $MAX_ATTEMPTS); do
-              if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no opc@$node "echo '✅ $node is ready'" 2>/dev/null; then
+              # First check if we can reach the node at all
+              if ! ping -c 1 -W 2 $node >/dev/null 2>&1; then
+                echo "  Attempt $i/$MAX_ATTEMPTS - $node not reachable via network, waiting 10s..."
+                sleep 10
+                continue
+              fi
+              
+              # Try SSH with more detailed error reporting
+              SSH_OUTPUT=$(timeout 10 ssh -v -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$node "echo '✅ $node is ready'" 2>&1)
+              SSH_EXIT_CODE=$?
+              
+              if [ $SSH_EXIT_CODE -eq 0 ]; then
                 echo "✅ $node is accessible"
                 break
               fi
+              
               if [ $i -eq $MAX_ATTEMPTS ]; then
                 echo "❌ Failed to connect to $node after $MAX_ATTEMPTS attempts"
-                echo "🔍 Debugging information:"
-                echo "Tailscale status:"
-                tailscale status || echo "Failed to get tailscale status"
-                echo "Attempting to ping $node:"
+                echo "🔍 Final SSH attempt output:"
+                echo "$SSH_OUTPUT"
+                echo ""
+                echo "🔍 Network connectivity:"
                 ping -c 3 $node || echo "Ping failed"
-                echo "Checking if $node appears in Tailscale:"
+                echo ""
+                echo "🔍 Tailscale status:"
                 tailscale status | grep $node || echo "$node not found in tailscale status"
+                echo ""
+                echo "🔍 Checking if SSH port is open:"
+                timeout 5 nc -zv $node 22 || echo "Port 22 not accessible"
+                echo ""
+                echo "🔍 Checking SELinux and system status on $node:"
+                # Try to get system info even if SSH fails
+                timeout 10 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$node "
+                  echo 'System info:';
+                  uptime;
+                  echo 'SELinux status:';
+                  getenforce 2>/dev/null || echo 'SELinux not available';
+                  echo 'SSH daemon status:';
+                  systemctl is-active sshd || echo 'sshd status unknown';
+                  echo 'Tailscale status:';
+                  tailscale status 2>/dev/null || echo 'tailscale status failed';
+                  echo 'Cloud-init status:';
+                  cloud-init status 2>/dev/null || echo 'cloud-init status unknown';
+                " 2>/dev/null || echo "Could not retrieve system status from $node"
                 exit 1
               fi
-              echo "  Attempt $i/$MAX_ATTEMPTS - waiting 20s..."
-              sleep 20
+              
+              # Show some progress info every 5 attempts
+              if [ $((i % 5)) -eq 0 ]; then
+                echo "  Attempt $i/$MAX_ATTEMPTS - SSH failed, checking port 22..."
+                timeout 3 nc -zv $node 22 2>/dev/null && echo "    Port 22 is open" || echo "    Port 22 not accessible yet"
+              fi
+              
+              echo "  Attempt $i/$MAX_ATTEMPTS - waiting 10s..."
+              sleep 10
             done
           done
 

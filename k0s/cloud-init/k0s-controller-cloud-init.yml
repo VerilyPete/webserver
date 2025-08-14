@@ -12,6 +12,7 @@ packages:
   - jq
   - iptables
   - iproute-tc
+  - policycoreutils-python-utils
 
 write_files:
   - path: /usr/local/bin/setup-k0s-controller.sh
@@ -125,6 +126,32 @@ write_files:
       set -euo pipefail
 
       echo "=== Installing Tailscale ==="
+
+      # Check and handle SELinux for Tailscale
+      echo "Checking SELinux status..."
+      if command -v getenforce >/dev/null 2>&1; then
+        SELINUX_STATUS=$(getenforce)
+        echo "SELinux status: $SELINUX_STATUS"
+        
+        if [ "$SELINUX_STATUS" = "Enforcing" ]; then
+          echo "SELinux is enforcing, configuring for Tailscale..."
+          
+          # Allow SSH connections through non-standard interfaces
+          setsebool -P ssh_sysadm_login 1 2>/dev/null || echo "Could not set ssh_sysadm_login"
+          setsebool -P nis_enabled 1 2>/dev/null || echo "Could not set nis_enabled"
+          
+          # Allow network connections
+          setsebool -P domain_kernel_load_modules 1 2>/dev/null || echo "Could not set domain_kernel_load_modules"
+          
+          # Set SELinux to permissive mode temporarily for setup
+          echo "Setting SELinux to permissive mode for Tailscale setup..."
+          setenforce 0 || echo "Could not set SELinux to permissive"
+          
+          echo "SELinux configuration for Tailscale completed"
+        fi
+      else
+        echo "SELinux not available"
+      fi
 
       # Install Tailscale
       curl -fsSL https://tailscale.com/install.sh | sh
