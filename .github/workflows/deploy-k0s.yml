@@ -105,13 +105,21 @@ jobs:
           query: 'data[?contains(\"display-name\", `k8s-controller`)].id | [0]'
           silent: false
 
-      - name: Terminate controller instance
+      - name: Clean controller instance ID
         if: steps.find_controller_id.outputs.output != '' && steps.find_controller_id.outputs.output != 'null' && steps.find_controller_id.outputs.output != '[]'
+        id: clean_controller_id
+        run: |
+          INSTANCE_ID=$(echo "${{ steps.find_controller_id.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned instance ID: $INSTANCE_ID"
+
+      - name: Terminate controller instance
+        if: steps.clean_controller_id.outputs.instance_id != ''
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             compute instance terminate
-            --instance-id "${{ steps.find_controller_id.outputs.output }}"
+            --instance-id "${{ steps.clean_controller_id.outputs.instance_id }}"
             --force
           silent: false
 
@@ -128,13 +136,21 @@ jobs:
           query: 'data[?\"display-name\"==`k8s-worker-1`][0].id'
           silent: false
 
-      - name: Terminate worker-1 instance
+      - name: Clean worker-1 instance ID
         if: steps.find_worker1_id.outputs.output != '' && steps.find_worker1_id.outputs.output != 'null' && steps.find_worker1_id.outputs.output != '[]'
+        id: clean_worker1_id
+        run: |
+          INSTANCE_ID=$(echo "${{ steps.find_worker1_id.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned worker-1 instance ID: $INSTANCE_ID"
+
+      - name: Terminate worker-1 instance
+        if: steps.clean_worker1_id.outputs.instance_id != ''
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             compute instance terminate
-            --instance-id "${{ steps.find_worker1_id.outputs.output }}"
+            --instance-id "${{ steps.clean_worker1_id.outputs.instance_id }}"
             --force
           silent: false
 
@@ -151,13 +167,21 @@ jobs:
           query: 'data[?\"display-name\"==`k8s-worker-2`][0].id'
           silent: false
 
-      - name: Terminate worker-2 instance
+      - name: Clean worker-2 instance ID
         if: steps.find_worker2_id.outputs.output != '' && steps.find_worker2_id.outputs.output != 'null' && steps.find_worker2_id.outputs.output != '[]'
+        id: clean_worker2_id
+        run: |
+          INSTANCE_ID=$(echo "${{ steps.find_worker2_id.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned worker-2 instance ID: $INSTANCE_ID"
+
+      - name: Terminate worker-2 instance
+        if: steps.clean_worker2_id.outputs.instance_id != ''
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             compute instance terminate
-            --instance-id "${{ steps.find_worker2_id.outputs.output }}"
+            --instance-id "${{ steps.clean_worker2_id.outputs.instance_id }}"
             --force
           silent: false
 
