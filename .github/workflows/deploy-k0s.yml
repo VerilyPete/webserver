@@ -209,7 +209,7 @@ jobs:
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --display-name "k8s-worker-1-data"
-            --size-in-gbs 20
+            --size-in-gbs 50
             --wait-for-state AVAILABLE
             --query 'data.id'
             --raw-output
