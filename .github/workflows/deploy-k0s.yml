@@ -46,10 +46,10 @@ jobs:
         continue-on-error: true
         with:
           command: >-
-            --debug compute instance list
+            compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?contains("display-name", `k8s-`)].{id: id, name: "display-name"}'
+          query: 'data[?contains(\"display-name\", `k8s-`)].{id: id, name: \"display-name\"}'
           silent: false
 
       - name: Clean up existing K8s instances and Tailscale entries
@@ -58,24 +58,24 @@ jobs:
           echo "Found existing K8s instances, cleaning up..."
 
           # Remove from Tailscale first
-          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
-            echo "Removing $hostname from Tailscale..."
+            for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+              echo "Removing $hostname from Tailscale..."
 
-            DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-              "https://api.tailscale.com/api/v2/tailnet/-/devices")
+              DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/tailnet/-/devices")
 
-            nodeId=$(echo "$DEVICE_RESPONSE" | \
-              jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
+              nodeId=$(echo "$DEVICE_RESPONSE" | \
+                jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
 
-            if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
-              curl -s -X DELETE \
-                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                "https://api.tailscale.com/api/v2/device/$nodeId"
-              echo "✅ Removed $hostname from Tailscale"
-            fi
-          done
+              if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
+                curl -s -X DELETE \
+                  -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                  "https://api.tailscale.com/api/v2/device/$nodeId"
+                echo "✅ Removed $hostname from Tailscale"
+              fi
+                           done
 
-          echo "Tailscale cleanup complete"
+           echo "Tailscale cleanup complete"
 
       - name: Find controller instance ID
         if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
@@ -86,7 +86,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?"display-name"==`k8s-controller`][0].id'
+          query: 'data[?\"display-name\"==`k8s-controller`][0].id'
           silent: false
 
       - name: Terminate controller instance
@@ -108,7 +108,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?"display-name"==`k8s-worker-1`][0].id'
+          query: 'data[?\"display-name\"==`k8s-worker-1`][0].id'
           silent: false
 
       - name: Terminate worker-1 instance
@@ -130,7 +130,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?"display-name"==`k8s-worker-2`][0].id'
+          query: 'data[?\"display-name\"==`k8s-worker-2`][0].id'
           silent: false
 
       - name: Terminate worker-2 instance
@@ -175,7 +175,7 @@ jobs:
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
-            --shape-config '{"memoryInGBs":6,"ocpus":1}'
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml
@@ -209,7 +209,7 @@ jobs:
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
-            --shape-config '{"memoryInGBs":6,"ocpus":1}'
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
@@ -246,7 +246,7 @@ jobs:
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
-            --shape-config '{"memoryInGBs":6,"ocpus":1}'
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
