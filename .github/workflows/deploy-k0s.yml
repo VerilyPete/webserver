@@ -99,7 +99,7 @@ jobs:
               --shape-config '{"memoryInGBs":6,"ocpus":1}' \
               --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
               --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
-              --user-data-file ./k8s/cloud-init/k0s-controller-cloud-init.yml \
+              --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml \
               --display-name "k8s-controller" \
               --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-controller","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
               --wait-for-state RUNNING \
@@ -130,7 +130,7 @@ jobs:
             --shape-config '{"memoryInGBs":6,"ocpus":1}' \
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
-            --user-data-file ./k8s/cloud-init/k0s-worker-cloud-init.yml \
+            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml \
             --display-name "k8s-worker-1" \
             --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-1","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
             --wait-for-state RUNNING \
@@ -162,7 +162,7 @@ jobs:
               --shape-config '{"memoryInGBs":6,"ocpus":1}' \
               --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
               --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
-              --user-data-file ./k8s/cloud-init/k0s-worker-cloud-init.yml \
+              --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml \
               --display-name "k8s-worker-2" \
               --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-2","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
               --wait-for-state RUNNING \
@@ -343,7 +343,7 @@ jobs:
           echo "Deploying Kubernetes manifests..."
 
           # Copy manifests to controller
-          scp -r -o StrictHostKeyChecking=no ./k8s/manifests opc@k8s-controller:/tmp/
+          scp -r -o StrictHostKeyChecking=no ./k0s/manifests opc@k8s-controller:/tmp/
 
           # Deploy on controller
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
