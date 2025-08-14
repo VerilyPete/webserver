@@ -92,7 +92,7 @@ jobs:
         id: create_controller
         with:
           command: |
-            compute instance launch \
+            --debug compute instance launch \
               --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
               --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
               --shape "VM.Standard.A1.Flex" \
@@ -104,6 +104,7 @@ jobs:
               --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-controller","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
               --wait-for-state RUNNING \
               --max-wait-seconds 600
+          silent: false
 
       - name: Create Block Volume and K8s Worker-1
         run: |
@@ -155,7 +156,7 @@ jobs:
         id: create_worker2
         with:
           command: |
-            compute instance launch \
+            --debug compute instance launch \
               --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
               --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
               --shape "VM.Standard.A1.Flex" \
@@ -167,6 +168,7 @@ jobs:
               --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-2","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
               --wait-for-state RUNNING \
               --max-wait-seconds 600
+          silent: false
 
       - name: Setup SSH
         run: |
