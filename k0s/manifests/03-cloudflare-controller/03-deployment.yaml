@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-tunnel-controller
+  namespace: cloudflare-tunnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflare-tunnel-controller
+  template:
+    metadata:
+      labels:
+        app: cloudflare-tunnel-controller
+    spec:
+      serviceAccountName: cloudflare-tunnel-controller
+      containers:
+        - name: controller
+          image: cloudflare/cloudflare-tunnel-ingress-controller:latest
+          imagePullPolicy: Always
+          env:
+            - name: CLOUDFLARE_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-credentials
+                  key: CLOUDFLARE_API_TOKEN
+            - name: CLOUDFLARE_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-credentials
+                  key: CLOUDFLARE_ACCOUNT_ID
+            - name: CLOUDFLARE_TUNNEL_NAME
+              value: "k8s-staging-tunnel"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"

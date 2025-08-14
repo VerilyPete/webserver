@@ -1,0 +1,553 @@
+name: Deploy K0s Kubernetes Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_type:
+        description: "Deployment type"
+        required: true
+        default: "fresh_deploy"
+        type: choice
+        options:
+          - "fresh_deploy"
+          - "update_app"
+          - "update_cluster"
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+  TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
+
+jobs:
+  deploy-k0s-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event.inputs.deploy_type == 'fresh_deploy'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for existing K8s instances
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: check_existing
+        continue-on-error: true
+        with:
+          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          query: 'data[?contains("display-name", `k8s-`)].{id: id, name: "display-name"}'
+
+      - name: Clean up existing K8s instances and Tailscale entries
+        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        run: |
+          echo "Found existing K8s instances, cleaning up..."
+
+          # Remove from Tailscale first
+          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "Removing $hostname from Tailscale..."
+
+            DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+              "https://api.tailscale.com/api/v2/tailnet/-/devices")
+
+            nodeId=$(echo "$DEVICE_RESPONSE" | \
+              jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
+
+            if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
+              curl -s -X DELETE \
+                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/device/$nodeId"
+              echo "✅ Removed $hostname from Tailscale"
+            fi
+          done
+
+          # Terminate OCI instances
+          INSTANCES='${{ steps.check_existing.outputs.output }}'
+          echo "$INSTANCES" | jq -r '.[].id' | while read instance_id; do
+            if [ -n "$instance_id" ]; then
+              echo "Terminating instance: $instance_id"
+              oci compute instance terminate --instance-id "$instance_id" --force
+            fi
+          done
+
+          # Clean up any existing block volumes named k8s-worker-1-data
+          VOLUME_ID=$(oci bv volume list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --display-name "k8s-worker-1-data" \
+            --lifecycle-state AVAILABLE \
+            --query 'data[0].id' \
+            --raw-output 2>/dev/null || echo "")
+
+          if [ -n "$VOLUME_ID" ] && [ "$VOLUME_ID" != "null" ]; then
+            echo "Deleting existing block volume: $VOLUME_ID"
+            oci bv volume delete --volume-id "$VOLUME_ID" --force
+          fi
+
+          echo "Waiting for resources to be terminated..."
+          sleep 30
+
+      - name: Create K0s Controller Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_controller
+        with:
+          command: |
+            compute instance launch \
+              --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"memoryInGBs":6,"ocpus":1}' \
+              --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
+              --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
+              --user-data-file ./k8s/cloud-init/k0s-controller-cloud-init.yml \
+              --display-name "k8s-controller" \
+              --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-controller","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
+              --wait-for-state RUNNING \
+              --max-wait-seconds 600
+
+      - name: Create Block Volume and K8s Worker-1
+        run: |
+          # Create block volume
+          echo "Creating block volume for worker-1..."
+          VOLUME_ID=$(oci bv volume create \
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --display-name "k8s-worker-1-data" \
+            --size-in-gbs 20 \
+            --wait-for-state AVAILABLE \
+            --query 'data.id' \
+            --raw-output)
+
+          echo "Created block volume: $VOLUME_ID"
+          echo "VOLUME_ID=$VOLUME_ID" >> $GITHUB_ENV
+
+          # Create worker-1 instance
+          echo "Creating k8s-worker-1 instance..."
+          INSTANCE_ID=$(oci compute instance launch \
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --shape "VM.Standard.A1.Flex" \
+            --shape-config '{"memoryInGBs":6,"ocpus":1}' \
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
+            --user-data-file ./k8s/cloud-init/k0s-worker-cloud-init.yml \
+            --display-name "k8s-worker-1" \
+            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-1","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
+            --wait-for-state RUNNING \
+            --max-wait-seconds 600 \
+            --query 'data.id' \
+            --raw-output)
+
+          echo "Created worker-1: $INSTANCE_ID"
+
+          # Attach block volume to worker-1
+          echo "Attaching block volume to worker-1..."
+          oci compute volume-attachment attach \
+            --instance-id "$INSTANCE_ID" \
+            --type paravirtualized \
+            --volume-id "$VOLUME_ID" \
+            --wait-for-state ATTACHED
+
+          echo "✅ Worker-1 created with attached storage"
+
+      - name: Create K8s Worker-2 Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_worker2
+        with:
+          command: |
+            compute instance launch \
+              --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"memoryInGBs":6,"ocpus":1}' \
+              --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
+              --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
+              --user-data-file ./k8s/cloud-init/k0s-worker-cloud-init.yml \
+              --display-name "k8s-worker-2" \
+              --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-2","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
+              --wait-for-state RUNNING \
+              --max-wait-seconds 600
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale for GitHub Actions
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Wait for all nodes to be accessible
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for all nodes to be accessible via Tailscale..."
+
+          for node in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "Checking $node..."
+            MAX_ATTEMPTS=30
+            for i in $(seq 1 $MAX_ATTEMPTS); do
+              if timeout 5 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no opc@$node "echo '✅ $node is ready'" 2>/dev/null; then
+                break
+              fi
+              if [ $i -eq $MAX_ATTEMPTS ]; then
+                echo "❌ Failed to connect to $node after $MAX_ATTEMPTS attempts"
+                exit 1
+              fi
+              echo "  Attempt $i/$MAX_ATTEMPTS - waiting 20s..."
+              sleep 20
+            done
+          done
+
+          echo "✅ All nodes are accessible"
+
+      - name: Verify K0s installation on all nodes
+        run: |
+          echo "Verifying K0s installation..."
+
+          # Check controller
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller "
+            echo 'Controller status:'
+            sudo systemctl status k0scontroller --no-pager | head -20
+            sudo k0s status
+          "
+
+          # Check workers
+          for worker in k8s-worker-1 k8s-worker-2; do
+            ssh -o StrictHostKeyChecking=no opc@$worker "
+              echo '$worker k0s binary:'
+              k0s version
+            "
+          done
+
+      - name: Join worker nodes to cluster
+        run: |
+          echo "=== Joining Worker Nodes to K0s Cluster ==="
+
+          # Get the join token from controller
+          echo "Retrieving join token from controller..."
+          JOIN_TOKEN=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo cat /tmp/worker-token.txt")
+
+          if [ -z "$JOIN_TOKEN" ]; then
+            echo "ERROR: Failed to get join token from controller"
+            exit 1
+          fi
+
+          # Function to join a worker
+          join_worker() {
+            local worker_name=$1
+            echo "Joining $worker_name to cluster..."
+
+            # Copy token to worker
+            echo "$JOIN_TOKEN" | ssh -o StrictHostKeyChecking=no opc@$worker_name "sudo tee /tmp/join-token.txt > /dev/null"
+
+            # Install and start k0s worker with the token
+            ssh -o StrictHostKeyChecking=no opc@$worker_name "
+              sudo k0s install worker --token-file /tmp/join-token.txt
+              sudo systemctl daemon-reload
+              sudo systemctl enable k0sworker
+              sudo systemctl start k0sworker
+
+              # Clean up token file
+              sudo rm -f /tmp/join-token.txt
+            "
+
+            echo "✅ $worker_name joined successfully"
+          }
+
+          # Join both workers
+          join_worker "k8s-worker-1"
+          join_worker "k8s-worker-2"
+
+          # Wait for nodes to appear in cluster
+          echo "Waiting for nodes to be ready in cluster..."
+          sleep 30
+
+          # Verify all nodes are present
+          echo "Current cluster nodes:"
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo k0s kubectl get nodes -o wide"
+
+      - name: Label nodes and setup storage
+        run: |
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            echo "Labeling nodes..."
+
+            # Wait for nodes to be ready
+            sudo k0s kubectl wait --for=condition=Ready node/k8s-worker-1 --timeout=120s
+            sudo k0s kubectl wait --for=condition=Ready node/k8s-worker-2 --timeout=120s
+
+            # Label worker nodes
+            sudo k0s kubectl label node k8s-worker-1 node-role.kubernetes.io/worker=true --overwrite
+            sudo k0s kubectl label node k8s-worker-2 node-role.kubernetes.io/worker=true --overwrite
+
+            # Add storage label to worker-1
+            sudo k0s kubectl label node k8s-worker-1 storage=local --overwrite
+
+            echo "Creating PersistentVolumes..."
+            sudo k0s kubectl apply -f - <<'PV'
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: prometheus-pv
+            spec:
+              capacity:
+                storage: 8Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-prometheus
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+            ---
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: grafana-pv
+            spec:
+              capacity:
+                storage: 2Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-grafana
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+            PV
+
+            echo "✅ Nodes labeled and storage configured"
+            sudo k0s kubectl get nodes --show-labels
+            sudo k0s kubectl get pv
+          EOF
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          echo "Deploying Kubernetes manifests..."
+
+          # Copy manifests to controller
+          scp -r -o StrictHostKeyChecking=no ./k8s/manifests opc@k8s-controller:/tmp/
+
+          # Deploy on controller
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            cd /tmp/manifests
+
+            # Update Cloudflare secret with actual values
+            cat > 02-cloudflare-secret.yaml << SECRET
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: cloudflare-credentials
+              namespace: cloudflare-tunnel
+            type: Opaque
+            stringData:
+              CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_STAGING_API_TOKEN }}"
+              CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
+            SECRET
+
+            # Apply manifests in order
+            echo "Creating namespaces..."
+            sudo k0s kubectl apply -f 01-namespace.yaml
+
+            echo "Creating Cloudflare secret..."
+            sudo k0s kubectl apply -f 02-cloudflare-secret.yaml
+
+            echo "Installing Cloudflare controller CRDs..."
+            sudo k0s kubectl apply -f 03-cloudflare-controller/01-crds.yaml
+
+            echo "Setting up RBAC..."
+            sudo k0s kubectl apply -f 03-cloudflare-controller/02-rbac.yaml
+
+            echo "Deploying Cloudflare controller..."
+            sudo k0s kubectl apply -f 03-cloudflare-controller/03-deployment.yaml
+
+            echo "Waiting for controller to be ready..."
+            sudo k0s kubectl wait --for=condition=available --timeout=300s \
+              deployment/cloudflare-tunnel-controller -n cloudflare-tunnel || true
+
+            echo "Deploying web application..."
+            sudo k0s kubectl apply -f 04-webserver/
+
+            echo "Waiting for web deployment..."
+            sudo k0s kubectl wait --for=condition=available --timeout=300s \
+              deployment/webserver -n webserver
+
+            echo "✅ All manifests deployed"
+          EOF
+
+      - name: Verify deployment
+        run: |
+          echo "=== Deployment Verification ==="
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            echo "📊 Cluster Status:"
+            echo "=================="
+            sudo k0s kubectl get nodes -o wide
+
+            echo -e "\n📦 All Pods:"
+            echo "============"
+            sudo k0s kubectl get pods -A -o wide
+
+            echo -e "\n🌐 Services:"
+            echo "============"
+            sudo k0s kubectl get svc -A
+
+            echo -e "\n🚪 Ingress:"
+            echo "==========="
+            sudo k0s kubectl get ingress -A
+
+            echo -e "\n🌍 Web Application Pods:"
+            echo "========================"
+            sudo k0s kubectl get pods -n webserver -o wide
+
+            echo -e "\n📝 Cloudflare Controller Status:"
+            echo "================================"
+            sudo k0s kubectl get deployment -n cloudflare-tunnel
+
+            # Get one pod's logs to verify it's running
+            POD=$(sudo k0s kubectl get pods -n cloudflare-tunnel -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if [ -n "$POD" ]; then
+              echo -e "\nController logs (last 20 lines):"
+              sudo k0s kubectl logs -n cloudflare-tunnel $POD --tail=20 || echo "Logs not yet available"
+            fi
+          EOF
+
+      - name: Test internal connectivity
+        run: |
+          echo "Testing web service internally..."
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            # Create a test pod and curl the service
+            sudo k0s kubectl run test-curl \
+              --image=curlimages/curl \
+              --rm -it \
+              --restart=Never \
+              -n webserver \
+              -- curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" http://webserver-service
+
+            # Show service endpoints
+            echo -e "\nService endpoints:"
+            sudo k0s kubectl get endpoints -n webserver
+          EOF
+
+      - name: Display summary
+        run: |
+          echo "========================================="
+          echo "✅ K0s Kubernetes Cluster Deployed!"
+          echo "========================================="
+          echo ""
+          echo "🖥️  Cluster Access:"
+          echo "  SSH: ssh opc@k8s-controller"
+          echo "  Kubectl: sudo k0s kubectl get pods -A"
+          echo ""
+          echo "🌐 Application:"
+          echo "  Domain: mclaurinquist.com"
+          echo "  Replicas: 2 (distributed across workers)"
+          echo ""
+          echo "📊 Resource Usage:"
+          echo "  Controller: 1 OCPU, 6GB RAM (k0s control plane)"
+          echo "  Worker-1: 1 OCPU, 6GB RAM + 20GB storage"
+          echo "  Worker-2: 1 OCPU, 6GB RAM"
+          echo "  Total: 3/4 OCPUs, 18/24GB RAM used"
+          echo ""
+          echo "🔍 Useful Commands:"
+          echo "  Watch pods: watch 'sudo k0s kubectl get pods -A'"
+          echo "  App logs: sudo k0s kubectl logs -f -n webserver deployment/webserver"
+          echo "  Node resources: sudo k0s kubectl top nodes"
+          echo ""
+          echo "📈 Next Steps:"
+          echo "  1. Verify website at https://mclaurinquist.com"
+          echo "  2. Test rolling updates with 'update_app' workflow"
+          echo "  3. Add monitoring stack when ready"
+          echo "========================================="
+
+  update-app:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.deploy_type == 'update_app'
+    timeout-minutes: 10
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Update web application
+        run: |
+          echo "🔄 Updating web application to latest image..."
+
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            # Get current deployment status
+            echo "Current deployment:"
+            sudo k0s kubectl get deployment/webserver -n webserver
+
+            # Update image (triggers rolling update)
+            sudo k0s kubectl set image deployment/webserver \
+              nginx=ghcr.io/verilypete/webserver:latest \
+              -n webserver
+
+            # Watch the rollout
+            echo -e "\n📊 Rolling update in progress..."
+            sudo k0s kubectl rollout status deployment/webserver -n webserver
+
+            # Show new pods
+            echo -e "\n✅ Updated pods:"
+            sudo k0s kubectl get pods -n webserver -o wide
+
+            # Verify all replicas are running
+            READY=$(sudo k0s kubectl get deployment webserver -n webserver -o jsonpath='{.status.readyReplicas}')
+            DESIRED=$(sudo k0s kubectl get deployment webserver -n webserver -o jsonpath='{.spec.replicas}')
+
+            if [ "$READY" = "$DESIRED" ]; then
+              echo "✅ All $READY replicas are running"
+            else
+              echo "⚠️  Only $READY of $DESIRED replicas are ready"
+              exit 1
+            fi
+          EOF
+
+      - name: Purge Cloudflare cache
+        run: |
+          echo "🔄 Purging Cloudflare cache..."
+
+          response=$(curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_STAGING_ZONE_ID }}/purge_cache" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_STAGING_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"purge_everything":true}')
+
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ Cache purged successfully"
+          else
+            echo "⚠️  Cache purge may have failed: $response"
+          fi
+
+          echo ""
+          echo "========================================="
+          echo "✅ Application Update Complete!"
+          echo "========================================="
+          echo "Check your site at https://mclaurinquist.com"
+          echo "========================================="

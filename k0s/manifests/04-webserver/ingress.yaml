@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webserver-ingress
+  namespace: webserver
+  annotations:
+    kubernetes.io/ingress.class: cloudflare-tunnel
+    cloudflare-tunnel.ingress.kubernetes.io/tunnel-name: k8s-staging-tunnel
+spec:
+  rules:
+    - host: mclaurinquist.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: webserver-service
+                port:
+                  number: 80

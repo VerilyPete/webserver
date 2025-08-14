@@ -1,0 +1,138 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+package_reboot_if_required: false
+
+packages:
+  - git
+  - curl
+  - wget
+  - nano
+  - htop
+  - jq
+  - iptables
+  - iproute-tc
+
+write_files:
+  - path: /usr/local/bin/setup-k0s-worker.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "=== Starting K0s Worker Setup ==="
+
+      # Download and install k0s
+      echo "Downloading k0s..."
+      curl -sSLf https://get.k0s.sh | sudo sh
+
+      # Create kubectl alias for convenience
+      echo "alias kubectl='k0s kubectl'" >> /home/opc/.bashrc
+      echo "alias k='k0s kubectl'" >> /home/opc/.bashrc
+
+      echo "=== K0s Worker Setup Complete ==="
+      echo "NOTE: This node needs to be joined to the cluster"
+      echo "The join will be completed by the deployment script"
+
+  - path: /usr/local/bin/install-tailscale.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "=== Installing Tailscale ==="
+
+      # Install Tailscale
+      curl -fsSL https://tailscale.com/install.sh | sh
+
+      # Start Tailscale with provided auth key
+      if [ -n "${TAILSCALE_AUTH_KEY}" ]; then
+        echo "Starting Tailscale..."
+        tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes --ssh
+        echo "Tailscale started successfully"
+      else
+        echo "ERROR: TAILSCALE_AUTH_KEY not provided"
+        exit 1
+      fi
+
+      echo "=== Tailscale Installation Complete ==="
+
+  - path: /usr/local/bin/mount-block-volume.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "=== Checking for Block Volume ==="
+
+      # Wait for device to be available
+      sleep 10
+
+      # Find the attached volume (usually /dev/sdb or /dev/oracleoci/oraclevdb)
+      DEVICE=""
+      for dev in /dev/sdb /dev/oracleoci/oraclevdb; do
+        if [ -b "$dev" ]; then
+          DEVICE="$dev"
+          break
+        fi
+      done
+
+      if [ -z "$DEVICE" ]; then
+        # Try to find any additional block device
+        DEVICE=$(lsblk -dpno NAME,SIZE | grep -v "sda" | awk 'NR==1 {print $1}')
+      fi
+
+      if [ -n "$DEVICE" ] && [ -b "$DEVICE" ]; then
+        echo "Found block device: $DEVICE"
+
+        # Create filesystem if needed
+        if ! blkid "$DEVICE" 2>/dev/null; then
+          echo "Creating ext4 filesystem on $DEVICE"
+          mkfs.ext4 -F "$DEVICE"
+        fi
+
+        # Mount the volume
+        mkdir -p /mnt/data
+        mount "$DEVICE" /mnt/data
+
+        # Add to fstab for persistence
+        DEVICE_UUID=$(blkid -s UUID -o value "$DEVICE")
+        if [ -n "$DEVICE_UUID" ]; then
+          echo "UUID=$DEVICE_UUID /mnt/data ext4 defaults,nofail 0 2" >> /etc/fstab
+        else
+          echo "$DEVICE /mnt/data ext4 defaults,nofail 0 2" >> /etc/fstab
+        fi
+
+        # Create directories for Kubernetes persistent volumes
+        mkdir -p /mnt/data/k8s-pv-prometheus
+        mkdir -p /mnt/data/k8s-pv-grafana
+        mkdir -p /mnt/data/k8s-pv-generic
+        chmod 777 /mnt/data/k8s-pv-*
+
+        echo "Block volume mounted successfully at /mnt/data"
+        ls -la /mnt/data/
+      else
+        echo "No additional block device found - skipping mount"
+      fi
+
+runcmd:
+  # Set hostname
+  - hostnamectl set-hostname ${HOSTNAME}
+
+  # Setup Tailscale first for connectivity
+  - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
+
+  # Give Tailscale time to establish connection
+  - sleep 10
+
+  # Setup k0s worker
+  - /usr/local/bin/setup-k0s-worker.sh
+
+  # For worker-1, mount the block volume if this is that node
+  - |
+    if [ "${HOSTNAME}" = "k8s-worker-1" ]; then
+      echo "Setting up block storage for worker-1..."
+      /usr/local/bin/mount-block-volume.sh
+    fi
+
+final_message: "K0s worker node ready! Waiting for cluster join..."

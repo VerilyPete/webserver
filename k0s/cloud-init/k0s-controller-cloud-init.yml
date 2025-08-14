@@ -1,0 +1,151 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+package_reboot_if_required: false
+
+packages:
+  - git
+  - curl
+  - wget
+  - nano
+  - htop
+  - jq
+  - iptables
+  - iproute-tc
+
+write_files:
+  - path: /usr/local/bin/setup-k0s-controller.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "=== Starting K0s Controller Setup ==="
+
+      # Download and install k0s
+      echo "Downloading k0s..."
+      curl -sSLf https://get.k0s.sh | sudo sh
+
+      # Create k0s configuration directory
+      mkdir -p /etc/k0s
+
+      # Create k0s config with some optimizations
+      cat > /etc/k0s/k0s.yaml <<'EOCONFIG'
+      apiVersion: k0s.k0sproject.io/v1beta1
+      kind: ClusterConfig
+      metadata:
+        name: k0s-cluster
+      spec:
+        api:
+          address: 0.0.0.0
+          port: 6443
+        storage:
+          type: etcd
+        network:
+          provider: kuberouter
+          podCIDR: 10.244.0.0/16
+          serviceCIDR: 10.96.0.0/12
+        telemetry:
+          enabled: false
+        extensions:
+          storage:
+            create_default_storage_class: true
+      EOCONFIG
+
+      # Install k0s as controller (not a worker on this node to save resources)
+      echo "Installing k0s controller..."
+      k0s install controller --config /etc/k0s/k0s.yaml
+
+      # Start k0s
+      echo "Starting k0s..."
+      systemctl daemon-reload
+      systemctl enable k0scontroller
+      systemctl start k0scontroller
+
+      # Wait for k0s to be ready
+      echo "Waiting for k0s to be ready..."
+      while ! k0s kubectl get nodes 2>/dev/null; do
+        echo "Waiting for API server..."
+        sleep 5
+      done
+
+      # Create worker join tokens
+      echo "Creating worker join tokens..."
+      k0s token create --role=worker --expiry=48h > /tmp/worker-token.txt
+
+      # Setup kubectl for opc user
+      echo "Setting up kubectl for opc user..."
+      mkdir -p /home/opc/.kube
+      k0s kubeconfig admin > /home/opc/.kube/config
+      chown -R opc:opc /home/opc/.kube
+
+      # Create kubectl alias
+      echo "alias kubectl='k0s kubectl'" >> /home/opc/.bashrc
+      echo "alias k='k0s kubectl'" >> /home/opc/.bashrc
+
+      # Create namespace for our apps
+      echo "Creating application namespace..."
+      k0s kubectl create namespace webserver || true
+      k0s kubectl create namespace cloudflare-tunnel || true
+
+      # Apply default storage class for future PVCs
+      k0s kubectl apply -f - <<'EOF'
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: local-path
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+      provisioner: kubernetes.io/no-provisioner
+      volumeBindingMode: WaitForFirstConsumer
+      EOF
+
+      echo "=== K0s Controller Setup Complete ==="
+      echo "Worker token saved to /tmp/worker-token.txt"
+
+  - path: /usr/local/bin/install-tailscale.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "=== Installing Tailscale ==="
+
+      # Install Tailscale
+      curl -fsSL https://tailscale.com/install.sh | sh
+
+      # Start Tailscale with provided auth key
+      if [ -n "${TAILSCALE_AUTH_KEY}" ]; then
+        echo "Starting Tailscale..."
+        tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes --ssh
+        echo "Tailscale started successfully"
+      else
+        echo "ERROR: TAILSCALE_AUTH_KEY not provided"
+        exit 1
+      fi
+
+      echo "=== Tailscale Installation Complete ==="
+
+runcmd:
+  # Set hostname
+  - hostnamectl set-hostname ${HOSTNAME}
+
+  # Setup Tailscale first for connectivity
+  - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
+
+  # Give Tailscale time to establish connection
+  - sleep 10
+
+  # Setup k0s controller
+  - /usr/local/bin/setup-k0s-controller.sh
+
+  # Display the join token for reference
+  - |
+    if [ -f /tmp/worker-token.txt ]; then
+      echo "=====================================
+      echo "Worker join token created successfully"
+      echo "Token available at /tmp/worker-token.txt"
+      echo "====================================="
+    fi
+
+final_message: "K0s controller node ready! Worker token at /tmp/worker-token.txt"
