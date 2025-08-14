@@ -133,7 +133,7 @@ jobs:
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
             --raw-output
-          query: 'data[?\"display-name\"==`k8s-worker-1`][0].id'
+          query: 'data[?contains(\"display-name\", `k8s-worker-1`)].id | [0]'
           silent: false
 
       - name: Clean worker-1 instance ID
@@ -164,7 +164,7 @@ jobs:
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
             --raw-output
-          query: 'data[?\"display-name\"==`k8s-worker-2`][0].id'
+          query: 'data[?contains(\"display-name\", `k8s-worker-2`)].id | [0]'
           silent: false
 
       - name: Clean worker-2 instance ID
