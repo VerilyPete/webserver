@@ -372,22 +372,6 @@ jobs:
           authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:private-deploy
 
-      - name: Refresh Tailscale connection and DNS
-        run: |
-          echo "Refreshing Tailscale connection..."
-          # Force refresh of Tailscale DNS and peer list
-          tailscale status --json | jq '.Self.HostName' || echo "No hostname in status"
-          
-          # Wait a moment for DNS to propagate
-          sleep 5
-          
-          echo "Testing DNS resolution for k8s nodes..."
-          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
-            echo "Resolving $hostname..."
-            nslookup $hostname || echo "Failed to resolve $hostname"
-            echo "---"
-          done
-
       - name: Wait for all nodes to be accessible
         timeout-minutes: 15
         run: |
@@ -461,6 +445,33 @@ jobs:
 
           echo "✅ All nodes are accessible"
 
+      - name: Refresh Tailscale connection and DNS
+        run: |
+          echo "Refreshing Tailscale connection now that all nodes are online..."
+          
+          # Show current Tailscale status
+          echo "Current Tailscale peers:"
+          tailscale status
+          echo ""
+          
+          # Force refresh of Tailscale DNS and peer list
+          echo "Refreshing DNS cache..."
+          tailscale status --json | jq '.Self.HostName' || echo "No hostname in status"
+          
+          # Wait a moment for DNS to propagate
+          sleep 10
+          
+          echo "Testing DNS resolution for k8s nodes..."
+          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "Resolving $hostname..."
+            if nslookup $hostname; then
+              echo "✅ $hostname resolved successfully"
+            else
+              echo "⚠️ Failed to resolve $hostname, but continuing..."
+            fi
+            echo "---"
+          done
+
       - name: Verify K0s installation on all nodes
         timeout-minutes: 5
         run: |
@@ -523,7 +534,7 @@ jobs:
 
             # Install and start k0s worker with the token
             ssh -o StrictHostKeyChecking=no opc@$worker_name "
-              sudo k0s install worker --token-file /tmp/join-token.txt
+              sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
               sudo systemctl daemon-reload
               sudo systemctl enable k0sworker
               sudo systemctl start k0sworker
@@ -545,7 +556,7 @@ jobs:
 
           # Verify all nodes are present
           echo "Current cluster nodes:"
-          ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo k0s kubectl get nodes -o wide"
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide"
 
       - name: Label nodes and setup storage
         run: |
@@ -553,18 +564,18 @@ jobs:
             echo "Labeling nodes..."
 
             # Wait for nodes to be ready
-            sudo k0s kubectl wait --for=condition=Ready node/k8s-worker-1 --timeout=120s
-            sudo k0s kubectl wait --for=condition=Ready node/k8s-worker-2 --timeout=120s
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=Ready node/k8s-worker-1 --timeout=120s
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=Ready node/k8s-worker-2 --timeout=120s
 
             # Label worker nodes
-            sudo k0s kubectl label node k8s-worker-1 node-role.kubernetes.io/worker=true --overwrite
-            sudo k0s kubectl label node k8s-worker-2 node-role.kubernetes.io/worker=true --overwrite
+            sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 node-role.kubernetes.io/worker=true --overwrite
+            sudo /usr/local/bin/k0s kubectl label node k8s-worker-2 node-role.kubernetes.io/worker=true --overwrite
 
             # Add storage label to worker-1
-            sudo k0s kubectl label node k8s-worker-1 storage=local --overwrite
+            sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 storage=local --overwrite
 
             echo "Creating PersistentVolumes..."
-            sudo k0s kubectl apply -f - <<'PV'
+            sudo /usr/local/bin/k0s kubectl apply -f - <<'PV'
             apiVersion: v1
             kind: PersistentVolume
             metadata:
@@ -611,8 +622,8 @@ jobs:
             PV
 
             echo "✅ Nodes labeled and storage configured"
-            sudo k0s kubectl get nodes --show-labels
-            sudo k0s kubectl get pv
+            sudo /usr/local/bin/k0s kubectl get nodes --show-labels
+            sudo /usr/local/bin/k0s kubectl get pv
           EOF
 
       - name: Deploy Kubernetes manifests
@@ -641,29 +652,29 @@ jobs:
 
             # Apply manifests in order
             echo "Creating namespaces..."
-            sudo k0s kubectl apply -f 01-namespace.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f 01-namespace.yaml
 
             echo "Creating Cloudflare secret..."
-            sudo k0s kubectl apply -f 02-cloudflare-secret.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f 02-cloudflare-secret.yaml
 
             echo "Installing Cloudflare controller CRDs..."
-            sudo k0s kubectl apply -f 03-cloudflare-controller/01-crds.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f 03-cloudflare-controller/01-crds.yaml
 
             echo "Setting up RBAC..."
-            sudo k0s kubectl apply -f 03-cloudflare-controller/02-rbac.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f 03-cloudflare-controller/02-rbac.yaml
 
             echo "Deploying Cloudflare controller..."
-            sudo k0s kubectl apply -f 03-cloudflare-controller/03-deployment.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f 03-cloudflare-controller/03-deployment.yaml
 
             echo "Waiting for controller to be ready..."
-            sudo k0s kubectl wait --for=condition=available --timeout=300s \
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=available --timeout=300s \
               deployment/cloudflare-tunnel-controller -n cloudflare-tunnel || true
 
             echo "Deploying web application..."
-            sudo k0s kubectl apply -f 04-webserver/
+            sudo /usr/local/bin/k0s kubectl apply -f 04-webserver/
 
             echo "Waiting for web deployment..."
-            sudo k0s kubectl wait --for=condition=available --timeout=300s \
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=available --timeout=300s \
               deployment/webserver -n webserver
 
             echo "✅ All manifests deployed"
@@ -675,33 +686,33 @@ jobs:
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
             echo "📊 Cluster Status:"
             echo "=================="
-            sudo k0s kubectl get nodes -o wide
+            sudo /usr/local/bin/k0s kubectl get nodes -o wide
 
             echo -e "\n📦 All Pods:"
             echo "============"
-            sudo k0s kubectl get pods -A -o wide
+            sudo /usr/local/bin/k0s kubectl get pods -A -o wide
 
             echo -e "\n🌐 Services:"
             echo "============"
-            sudo k0s kubectl get svc -A
+            sudo /usr/local/bin/k0s kubectl get svc -A
 
             echo -e "\n🚪 Ingress:"
             echo "==========="
-            sudo k0s kubectl get ingress -A
+            sudo /usr/local/bin/k0s kubectl get ingress -A
 
             echo -e "\n🌍 Web Application Pods:"
             echo "========================"
-            sudo k0s kubectl get pods -n webserver -o wide
+            sudo /usr/local/bin/k0s kubectl get pods -n webserver -o wide
 
             echo -e "\n📝 Cloudflare Controller Status:"
             echo "================================"
-            sudo k0s kubectl get deployment -n cloudflare-tunnel
+            sudo /usr/local/bin/k0s kubectl get deployment -n cloudflare-tunnel
 
             # Get one pod's logs to verify it's running
-            POD=$(sudo k0s kubectl get pods -n cloudflare-tunnel -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            POD=$(sudo /usr/local/bin/k0s kubectl get pods -n cloudflare-tunnel -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
             if [ -n "$POD" ]; then
               echo -e "\nController logs (last 20 lines):"
-              sudo k0s kubectl logs -n cloudflare-tunnel $POD --tail=20 || echo "Logs not yet available"
+              sudo /usr/local/bin/k0s kubectl logs -n cloudflare-tunnel $POD --tail=20 || echo "Logs not yet available"
             fi
           EOF
 
@@ -710,7 +721,7 @@ jobs:
           echo "Testing web service internally..."
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
             # Create a test pod and curl the service
-            sudo k0s kubectl run test-curl \
+            sudo /usr/local/bin/k0s kubectl run test-curl \
               --image=curlimages/curl \
               --rm -it \
               --restart=Never \
@@ -719,7 +730,7 @@ jobs:
 
             # Show service endpoints
             echo -e "\nService endpoints:"
-            sudo k0s kubectl get endpoints -n webserver
+            sudo /usr/local/bin/k0s kubectl get endpoints -n webserver
           EOF
 
       - name: Display summary
@@ -730,7 +741,7 @@ jobs:
           echo ""
           echo "🖥️  Cluster Access:"
           echo "  SSH: ssh opc@k8s-controller"
-          echo "  Kubectl: sudo k0s kubectl get pods -A"
+          echo "  Kubectl: sudo /usr/local/bin/k0s kubectl get pods -A"
           echo ""
           echo "🌐 Application:"
           echo "  Domain: mclaurinquist.com"
@@ -743,9 +754,9 @@ jobs:
           echo "  Total: 3/4 OCPUs, 18/24GB RAM used"
           echo ""
           echo "🔍 Useful Commands:"
-          echo "  Watch pods: watch 'sudo k0s kubectl get pods -A'"
-          echo "  App logs: sudo k0s kubectl logs -f -n webserver deployment/webserver"
-          echo "  Node resources: sudo k0s kubectl top nodes"
+          echo "  Watch pods: watch 'sudo /usr/local/bin/k0s kubectl get pods -A'"
+          echo "  App logs: sudo /usr/local/bin/k0s kubectl logs -f -n webserver deployment/webserver"
+          echo "  Node resources: sudo /usr/local/bin/k0s kubectl top nodes"
           echo ""
           echo "📈 Next Steps:"
           echo "  1. Verify website at https://mclaurinquist.com"
@@ -779,24 +790,24 @@ jobs:
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
             # Get current deployment status
             echo "Current deployment:"
-            sudo k0s kubectl get deployment/webserver -n webserver
+            sudo /usr/local/bin/k0s kubectl get deployment/webserver -n webserver
 
             # Update image (triggers rolling update)
-            sudo k0s kubectl set image deployment/webserver \
+            sudo /usr/local/bin/k0s kubectl set image deployment/webserver \
               nginx=ghcr.io/verilypete/webserver:latest \
               -n webserver
 
             # Watch the rollout
             echo -e "\n📊 Rolling update in progress..."
-            sudo k0s kubectl rollout status deployment/webserver -n webserver
+            sudo /usr/local/bin/k0s kubectl rollout status deployment/webserver -n webserver
 
             # Show new pods
             echo -e "\n✅ Updated pods:"
-            sudo k0s kubectl get pods -n webserver -o wide
+            sudo /usr/local/bin/k0s kubectl get pods -n webserver -o wide
 
             # Verify all replicas are running
-            READY=$(sudo k0s kubectl get deployment webserver -n webserver -o jsonpath='{.status.readyReplicas}')
-            DESIRED=$(sudo k0s kubectl get deployment webserver -n webserver -o jsonpath='{.spec.replicas}')
+            READY=$(sudo /usr/local/bin/k0s kubectl get deployment webserver -n webserver -o jsonpath='{.status.readyReplicas}')
+            DESIRED=$(sudo /usr/local/bin/k0s kubectl get deployment webserver -n webserver -o jsonpath='{.spec.replicas}')
 
             if [ "$READY" = "$DESIRED" ]; then
               echo "✅ All $READY replicas are running"
