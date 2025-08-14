@@ -101,6 +101,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
+            --raw-output
           query: 'data[?contains(\"display-name\", `k8s-controller`)].id | [0]'
           silent: false
 
@@ -123,6 +124,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
+            --raw-output
           query: 'data[?\"display-name\"==`k8s-worker-1`][0].id'
           silent: false
 
@@ -145,6 +147,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
+            --raw-output
           query: 'data[?\"display-name\"==`k8s-worker-2`][0].id'
           silent: false
 
