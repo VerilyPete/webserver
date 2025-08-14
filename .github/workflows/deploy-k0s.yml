@@ -62,112 +62,184 @@ jobs:
             fi
           done
 
-          # Terminate OCI instances
-          INSTANCES='${{ steps.check_existing.outputs.output }}'
-          echo "$INSTANCES" | jq -r '.[].id' | while read instance_id; do
-            if [ -n "$instance_id" ]; then
-              echo "Terminating instance: $instance_id"
-              oci compute instance terminate --instance-id "$instance_id" --force
-            fi
-          done
+          echo "Tailscale cleanup complete"
 
-          # Clean up any existing block volumes named k8s-worker-1-data
-          VOLUME_ID=$(oci bv volume list \
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-            --display-name "k8s-worker-1-data" \
-            --lifecycle-state AVAILABLE \
-            --query 'data[0].id' \
-            --raw-output 2>/dev/null || echo "")
+      - name: Find controller instance ID
+        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: find_controller_id
+        with:
+          command: >-
+            --debug compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+          query: 'data[?"display-name"==`k8s-controller`]|[0].id'
+          silent: false
 
-          if [ -n "$VOLUME_ID" ] && [ "$VOLUME_ID" != "null" ]; then
-            echo "Deleting existing block volume: $VOLUME_ID"
-            oci bv volume delete --volume-id "$VOLUME_ID" --force
-          fi
+      - name: Terminate controller instance
+        if: steps.find_controller_id.outputs.output != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            --debug compute instance terminate
+            --instance-id "${{ steps.find_controller_id.outputs.output }}"
+            --force
+          silent: false
 
-          echo "Waiting for resources to be terminated..."
-          sleep 30
+      - name: Find worker-1 instance ID
+        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: find_worker1_id
+        with:
+          command: >-
+            --debug compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+          query: 'data[?"display-name"==`k8s-worker-1`]|[0].id'
+          silent: false
+
+      - name: Terminate worker-1 instance
+        if: steps.find_worker1_id.outputs.output != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            --debug compute instance terminate
+            --instance-id "${{ steps.find_worker1_id.outputs.output }}"
+            --force
+          silent: false
+
+      - name: Find worker-2 instance ID
+        if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: find_worker2_id
+        with:
+          command: >-
+            --debug compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+          query: 'data[?"display-name"==`k8s-worker-2`]|[0].id'
+          silent: false
+
+      - name: Terminate worker-2 instance
+        if: steps.find_worker2_id.outputs.output != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            --debug compute instance terminate
+            --instance-id "${{ steps.find_worker2_id.outputs.output }}"
+            --force
+          silent: false
+
+      - name: Find existing worker-1 data volume
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: find_worker1_volume
+        with:
+          command: >-
+            --debug bv volume list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --display-name "k8s-worker-1-data"
+            --lifecycle-state AVAILABLE
+          query: 'data[0].id'
+          silent: false
+
+      - name: Delete existing worker-1 data volume
+        if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            --debug bv volume delete
+            --volume-id "${{ steps.find_worker1_volume.outputs.output }}"
+            --force
+          silent: false
 
       - name: Create K0s Controller Instance
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: create_controller
         with:
-          command: |
-            --debug compute instance launch \
-              --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-              --shape "VM.Standard.A1.Flex" \
-              --shape-config '{"memoryInGBs":6,"ocpus":1}' \
-              --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
-              --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
-              --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml \
-              --display-name "k8s-controller" \
-              --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-controller","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
-              --wait-for-state RUNNING \
-              --max-wait-seconds 600
+          command: >-
+            --debug compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config '{"memoryInGBs":6,"ocpus":1}'
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml
+            --display-name "k8s-controller"
+            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-controller","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}'
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
           silent: false
 
-      - name: Create Block Volume and K8s Worker-1
-        run: |
-          # Create block volume
-          echo "Creating block volume for worker-1..."
-          VOLUME_ID=$(oci bv volume create \
-            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-            --display-name "k8s-worker-1-data" \
-            --size-in-gbs 20 \
-            --wait-for-state AVAILABLE \
-            --query 'data.id' \
-            --raw-output)
+      - name: Create block volume for worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_volume
+        with:
+          command: >-
+            --debug bv volume create
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --display-name "k8s-worker-1-data"
+            --size-in-gbs 20
+            --wait-for-state AVAILABLE
+            --query 'data.id'
+            --raw-output
+          silent: false
 
-          echo "Created block volume: $VOLUME_ID"
-          echo "VOLUME_ID=$VOLUME_ID" >> $GITHUB_ENV
+      - name: Create K8s Worker-1 Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_worker1
+        with:
+          command: >-
+            --debug compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config '{"memoryInGBs":6,"ocpus":1}'
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
+            --display-name "k8s-worker-1"
+            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-1","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}'
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
+            --query 'data.id'
+            --raw-output
+          silent: false
 
-          # Create worker-1 instance
-          echo "Creating k8s-worker-1 instance..."
-          INSTANCE_ID=$(oci compute instance launch \
-            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-            --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"memoryInGBs":6,"ocpus":1}' \
-            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
-            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
-            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml \
-            --display-name "k8s-worker-1" \
-            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-1","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
-            --wait-for-state RUNNING \
-            --max-wait-seconds 600 \
-            --query 'data.id' \
-            --raw-output)
-
-          echo "Created worker-1: $INSTANCE_ID"
-
-          # Attach block volume to worker-1
-          echo "Attaching block volume to worker-1..."
-          oci compute volume-attachment attach \
-            --instance-id "$INSTANCE_ID" \
-            --type paravirtualized \
-            --volume-id "$VOLUME_ID" \
+      - name: Attach block volume to worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            --debug compute volume-attachment attach
+            --instance-id "${{ steps.create_worker1.outputs.output }}"
+            --type paravirtualized
+            --volume-id "${{ steps.create_volume.outputs.output }}"
             --wait-for-state ATTACHED
+          silent: false
 
-          echo "✅ Worker-1 created with attached storage"
+      - name: Confirm worker-1 and volume
+        run: |
+          echo "Created block volume: ${{ steps.create_volume.outputs.output }}"
+          echo "Created worker-1: ${{ steps.create_worker1.outputs.output }}"
 
       - name: Create K8s Worker-2 Instance
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: create_worker2
         with:
-          command: |
-            --debug compute instance launch \
-              --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-              --shape "VM.Standard.A1.Flex" \
-              --shape-config '{"memoryInGBs":6,"ocpus":1}' \
-              --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}" \
-              --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}" \
-              --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml \
-              --display-name "k8s-worker-2" \
-              --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-2","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}' \
-              --wait-for-state RUNNING \
-              --max-wait-seconds 600
+          command: >-
+            --debug compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config '{"memoryInGBs":6,"ocpus":1}'
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
+            --display-name "k8s-worker-2"
+            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-2","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}'
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
           silent: false
 
       - name: Setup SSH
