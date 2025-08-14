@@ -70,7 +70,7 @@ jobs:
         id: find_controller_id
         with:
           command: >-
-            --debug compute instance list
+            compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
           query: 'data[?"display-name"==`k8s-controller`]|[0].id'
@@ -81,7 +81,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
-            --debug compute instance terminate
+            compute instance terminate
             --instance-id "${{ steps.find_controller_id.outputs.output }}"
             --force
           silent: false
@@ -92,7 +92,7 @@ jobs:
         id: find_worker1_id
         with:
           command: >-
-            --debug compute instance list
+            compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
           query: 'data[?"display-name"==`k8s-worker-1`]|[0].id'
@@ -103,7 +103,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
-            --debug compute instance terminate
+            compute instance terminate
             --instance-id "${{ steps.find_worker1_id.outputs.output }}"
             --force
           silent: false
@@ -114,7 +114,7 @@ jobs:
         id: find_worker2_id
         with:
           command: >-
-            --debug compute instance list
+            compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
           query: 'data[?"display-name"==`k8s-worker-2`]|[0].id'
@@ -125,7 +125,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
-            --debug compute instance terminate
+            compute instance terminate
             --instance-id "${{ steps.find_worker2_id.outputs.output }}"
             --force
           silent: false
@@ -135,19 +135,20 @@ jobs:
         id: find_worker1_volume
         with:
           command: >-
-            --debug bv volume list
+            bv volume list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --display-name "k8s-worker-1-data"
             --lifecycle-state AVAILABLE
-          query: 'data[0].id'
+          query: 'data[0].id // empty'
           silent: false
+        continue-on-error: true
 
       - name: Delete existing worker-1 data volume
-        if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null'
+        if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null' && steps.find_worker1_volume.outputs.output != 'empty'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
-            --debug bv volume delete
+            bv volume delete
             --volume-id "${{ steps.find_worker1_volume.outputs.output }}"
             --force
           silent: false
@@ -157,7 +158,7 @@ jobs:
         id: create_controller
         with:
           command: >-
-            --debug compute instance launch
+            compute instance launch
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
@@ -176,7 +177,7 @@ jobs:
         id: create_volume
         with:
           command: >-
-            --debug bv volume create
+            bv volume create
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --display-name "k8s-worker-1-data"
@@ -191,7 +192,7 @@ jobs:
         id: create_worker1
         with:
           command: >-
-            --debug compute instance launch
+            compute instance launch
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
@@ -211,7 +212,7 @@ jobs:
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
-            --debug compute volume-attachment attach
+            compute volume-attachment attach
             --instance-id "${{ steps.create_worker1.outputs.output }}"
             --type paravirtualized
             --volume-id "${{ steps.create_volume.outputs.output }}"
@@ -228,7 +229,7 @@ jobs:
         id: create_worker2
         with:
           command: >-
-            --debug compute instance launch
+            compute instance launch
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
