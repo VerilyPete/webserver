@@ -49,7 +49,7 @@ write_files:
       if [ -n "${TAILSCALE_AUTH_KEY}" ]; then
         echo "Starting Tailscale..."
         if [ -n "${HOSTNAME}" ]; then
-          tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes --ssh
+          tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --ssh
         else
           echo "ERROR: HOSTNAME not provided"
           exit 1
