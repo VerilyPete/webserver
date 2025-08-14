@@ -372,10 +372,30 @@ jobs:
           authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:private-deploy
 
+      - name: Refresh Tailscale connection and DNS
+        run: |
+          echo "Refreshing Tailscale connection..."
+          # Force refresh of Tailscale DNS and peer list
+          tailscale status --json | jq '.Self.HostName' || echo "No hostname in status"
+          
+          # Wait a moment for DNS to propagate
+          sleep 5
+          
+          echo "Testing DNS resolution for k8s nodes..."
+          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "Resolving $hostname..."
+            nslookup $hostname || echo "Failed to resolve $hostname"
+            echo "---"
+          done
+
       - name: Wait for all nodes to be accessible
         timeout-minutes: 15
         run: |
           echo "Waiting for all nodes to be accessible via Tailscale..."
+          
+          echo "Current Tailscale status:"
+          tailscale status
+          echo ""
 
           for node in k8s-controller k8s-worker-1 k8s-worker-2; do
             echo "Checking $node..."

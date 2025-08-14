@@ -160,12 +160,28 @@ write_files:
       if [ -n "${TAILSCALE_AUTH_KEY}" ]; then
         echo "Starting Tailscale..."
         if [ -n "${HOSTNAME}" ]; then
-          tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --ssh
+          tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-dns=false
         else
           echo "ERROR: HOSTNAME not provided"
           exit 1
         fi
         echo "Tailscale started successfully"
+        
+        # Fix DNS configuration to prevent conflicts
+        echo "Configuring DNS to prevent conflicts..."
+        # Backup original resolv.conf if it doesn't exist
+        if [ ! -f /etc/resolv.conf.backup ]; then
+          cp /etc/resolv.conf /etc/resolv.conf.backup 2>/dev/null || true
+        fi
+        
+        # Ensure we have proper DNS servers
+        if ! grep -q "100.100.100.100" /etc/resolv.conf; then
+          echo "nameserver 100.100.100.100" >> /etc/resolv.conf
+        fi
+        if ! grep -q "8.8.8.8" /etc/resolv.conf; then
+          echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+        fi
+        
       else
         echo "ERROR: TAILSCALE_AUTH_KEY not provided"
         exit 1
