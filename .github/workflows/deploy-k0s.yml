@@ -207,6 +207,42 @@ jobs:
           echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
           echo "Cleaned existing volume ID: $VOLUME_ID"
 
+      - name: Find volume attachments for existing worker-1 volume
+        if: steps.clean_existing_volume_id.outputs.volume_id != ''
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: find_volume_attachments
+        with:
+          command: >-
+            compute volume-attachment list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --volume-id "${{ steps.clean_existing_volume_id.outputs.volume_id }}"
+          silent: false
+        continue-on-error: true
+
+      - name: Detach existing worker-1 volume attachments
+        if: steps.find_volume_attachments.outputs.output != '' && steps.find_volume_attachments.outputs.output != 'null' && steps.find_volume_attachments.outputs.output != '[]'
+        run: |
+          echo "Found volume attachments, detaching..."
+          ATTACHMENTS='${{ steps.find_volume_attachments.outputs.output }}'
+          
+          # Parse JSON and extract attachment IDs
+          ATTACHMENT_JSON=$(echo "$ATTACHMENTS" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          ATTACHMENT_IDS=$(echo "$ATTACHMENT_JSON" | jq -r '.data[]?.id // empty')
+          
+          if [ -n "$ATTACHMENT_IDS" ]; then
+            echo "Detaching volume attachments..."
+            echo "$ATTACHMENT_IDS" | while read -r attachment_id; do
+              if [ -n "$attachment_id" ] && [ "$attachment_id" != "null" ]; then
+                echo "Detaching attachment: $attachment_id"
+                oci compute volume-attachment detach --volume-attachment-id "$attachment_id" --force --wait-for-state DETACHED || echo "Failed to detach $attachment_id, continuing..."
+              fi
+            done
+            echo "Volume detachment completed"
+            sleep 10  # Wait for detachment to complete
+          else
+            echo "No attachments found to detach"
+          fi
+
       - name: Delete existing worker-1 data volume
         if: steps.clean_existing_volume_id.outputs.volume_id != ''
         uses: oracle-actions/run-oci-cli-command@v1.3.2
