@@ -101,11 +101,11 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?contains(\"display-name\", `k8s-controller`)][0].id'
+          query: 'data[?\"display-name\"==`k8s-controller`][0].id'
           silent: false
 
       - name: Terminate controller instance
-        if: steps.find_controller_id.outputs.output != ''
+        if: steps.find_controller_id.outputs.output != '' && steps.find_controller_id.outputs.output != 'null' && steps.find_controller_id.outputs.output != '[]'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
@@ -127,7 +127,7 @@ jobs:
           silent: false
 
       - name: Terminate worker-1 instance
-        if: steps.find_worker1_id.outputs.output != ''
+        if: steps.find_worker1_id.outputs.output != '' && steps.find_worker1_id.outputs.output != 'null' && steps.find_worker1_id.outputs.output != '[]'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
@@ -149,7 +149,7 @@ jobs:
           silent: false
 
       - name: Terminate worker-2 instance
-        if: steps.find_worker2_id.outputs.output != ''
+        if: steps.find_worker2_id.outputs.output != '' && steps.find_worker2_id.outputs.output != 'null' && steps.find_worker2_id.outputs.output != '[]'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
