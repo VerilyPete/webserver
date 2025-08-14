@@ -52,6 +52,22 @@ jobs:
           query: 'data[?contains(\"display-name\", `k8s-`)].{id: id, name: \"display-name\"}'
           silent: false
 
+      - name: Debug check_existing output
+        run: |
+          echo "Raw output: '${{ steps.check_existing.outputs.output }}'"
+          echo "Output length: ${#steps.check_existing.outputs.output}"
+          echo "Output type check:"
+          if [ "${{ steps.check_existing.outputs.output }}" = "[]" ]; then
+            echo "  - Matches '[]'"
+          else
+            echo "  - Does NOT match '[]'"
+          fi
+          if [ "${{ steps.check_existing.outputs.output }}" = "" ]; then
+            echo "  - Is empty string"
+          else
+            echo "  - Is NOT empty string"
+          fi
+
       - name: Clean up existing K8s instances and Tailscale entries
         if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
         run: |
