@@ -117,7 +117,12 @@ write_files:
       # Start Tailscale with provided auth key
       if [ -n "${TAILSCALE_AUTH_KEY}" ]; then
         echo "Starting Tailscale..."
-        tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes --ssh
+        if [ -n "${HOSTNAME}" ]; then
+          tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes --ssh
+        else
+          echo "ERROR: HOSTNAME not provided"
+          exit 1
+        fi
         echo "Tailscale started successfully"
       else
         echo "ERROR: TAILSCALE_AUTH_KEY not provided"
@@ -127,10 +132,10 @@ write_files:
       echo "=== Tailscale Installation Complete ==="
 
 runcmd:
-  # Set hostname
+  # Set hostname first
   - hostnamectl set-hostname ${HOSTNAME}
 
-  # Setup Tailscale first for connectivity
+  # Setup Tailscale for connectivity
   - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
 
   # Give Tailscale time to establish connection
