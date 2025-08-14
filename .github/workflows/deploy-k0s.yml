@@ -263,14 +263,24 @@ jobs:
             --raw-output
           silent: false
 
+      - name: Clean worker-1 and volume IDs for attachment
+        id: clean_attachment_ids
+        run: |
+          WORKER_ID=$(echo "${{ steps.create_worker1.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          VOLUME_ID=$(echo "${{ steps.create_volume.outputs.output }}" | tr -d '\n\r' | tr -d '"')
+          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
+          echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned worker ID: $WORKER_ID"
+          echo "Cleaned volume ID: $VOLUME_ID"
+
       - name: Attach block volume to worker-1
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             compute volume-attachment attach
-            --instance-id "${{ steps.create_worker1.outputs.output }}"
+            --instance-id "${{ steps.clean_attachment_ids.outputs.worker_id }}"
             --type paravirtualized
-            --volume-id "${{ steps.create_volume.outputs.output }}"
+            --volume-id "${{ steps.clean_attachment_ids.outputs.volume_id }}"
             --wait-for-state ATTACHED
           silent: false
 
