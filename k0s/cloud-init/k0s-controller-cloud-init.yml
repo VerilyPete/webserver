@@ -29,15 +29,19 @@ write_files:
       # Create k0s configuration directory
       mkdir -p /etc/k0s
 
+      # Get the primary IP address for binding
+      PRIMARY_IP=$(hostname -I | awk '{print $1}')
+      echo "Using primary IP for K0s API: $PRIMARY_IP"
+      
       # Create k0s config with some optimizations
-      cat > /etc/k0s/k0s.yaml <<'EOCONFIG'
+      cat > /etc/k0s/k0s.yaml <<EOCONFIG
       apiVersion: k0s.k0sproject.io/v1beta1
       kind: ClusterConfig
       metadata:
         name: k0s-cluster
       spec:
         api:
-          address: 0.0.0.0
+          address: $PRIMARY_IP
           port: 6443
         storage:
           type: etcd
@@ -147,7 +151,12 @@ runcmd:
   - hostnamectl set-hostname ${HOSTNAME}
 
   # Setup Tailscale for connectivity
-  - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
+  - |
+    export TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}"
+    export HOSTNAME="${HOSTNAME}"
+    echo "Setting up Tailscale with hostname: $HOSTNAME"
+    echo "Auth key length: ${#TAILSCALE_AUTH_KEY}"
+    /usr/local/bin/install-tailscale.sh
 
   # Give Tailscale time to establish connection and verify
   - |
@@ -168,7 +177,7 @@ runcmd:
   # Display the join token for reference
   - |
     if [ -f /tmp/worker-token.txt ]; then
-      echo "=====================================
+      echo "====================================="
       echo "Worker join token created successfully"
       echo "Token available at /tmp/worker-token.txt"
       echo "====================================="

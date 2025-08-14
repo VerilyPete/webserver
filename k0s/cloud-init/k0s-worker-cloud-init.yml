@@ -125,7 +125,12 @@ runcmd:
   - hostnamectl set-hostname ${HOSTNAME}
 
   # Setup Tailscale for connectivity
-  - TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}" HOSTNAME="${HOSTNAME}" /usr/local/bin/install-tailscale.sh
+  - |
+    export TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY}"
+    export HOSTNAME="${HOSTNAME}"
+    echo "Setting up Tailscale with hostname: $HOSTNAME"
+    echo "Auth key length: ${#TAILSCALE_AUTH_KEY}"
+    /usr/local/bin/install-tailscale.sh
 
   # Give Tailscale time to establish connection and verify
   - |
