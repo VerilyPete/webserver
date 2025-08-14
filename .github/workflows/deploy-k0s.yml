@@ -31,13 +31,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify required files exist
+        run: |
+          echo "Checking required files..."
+          ls -la ./k0s/cloud-init/
+          echo "Controller cloud-init file:"
+          cat ./k0s/cloud-init/k0s-controller-cloud-init.yml
+          echo "Worker cloud-init file:"
+          cat ./k0s/cloud-init/k0s-worker-cloud-init.yml
+
       - name: Check for existing K8s instances
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: check_existing
         continue-on-error: true
         with:
-          command: 'compute instance list --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" --lifecycle-state RUNNING'
+          command: >-
+            --debug compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
           query: 'data[?contains("display-name", `k8s-`)].{id: id, name: "display-name"}'
+          silent: false
 
       - name: Clean up existing K8s instances and Tailscale entries
         if: steps.check_existing.outputs.output != '[]' && steps.check_existing.outputs.output != ''
@@ -73,7 +86,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?"display-name"==`k8s-controller`]|[0].id'
+          query: 'data[?"display-name"==`k8s-controller`][0].id'
           silent: false
 
       - name: Terminate controller instance
@@ -95,7 +108,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?"display-name"==`k8s-worker-1`]|[0].id'
+          query: 'data[?"display-name"==`k8s-worker-1`][0].id'
           silent: false
 
       - name: Terminate worker-1 instance
@@ -117,7 +130,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?"display-name"==`k8s-worker-2`]|[0].id'
+          query: 'data[?"display-name"==`k8s-worker-2`][0].id'
           silent: false
 
       - name: Terminate worker-2 instance
@@ -139,12 +152,12 @@ jobs:
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --display-name "k8s-worker-1-data"
             --lifecycle-state AVAILABLE
-          query: 'data[0].id // empty'
+          query: 'data[0].id'
           silent: false
         continue-on-error: true
 
       - name: Delete existing worker-1 data volume
-        if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null' && steps.find_worker1_volume.outputs.output != 'empty'
+        if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null'
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
@@ -158,7 +171,7 @@ jobs:
         id: create_controller
         with:
           command: >-
-            compute instance launch
+            --debug compute instance launch
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
@@ -167,7 +180,7 @@ jobs:
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml
             --display-name "k8s-controller"
-            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-controller","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}'
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-controller\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
             --wait-for-state RUNNING
             --max-wait-seconds 600
           silent: false
@@ -201,7 +214,7 @@ jobs:
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
             --display-name "k8s-worker-1"
-            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-1","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}'
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-1\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
             --wait-for-state RUNNING
             --max-wait-seconds 600
             --query 'data.id'
@@ -238,7 +251,7 @@ jobs:
             --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
             --display-name "k8s-worker-2"
-            --metadata '{"ssh_authorized_keys":"${{ secrets.SSH_PUBLIC_KEY }}","HOSTNAME":"k8s-worker-2","TAILSCALE_AUTH_KEY":"${{ secrets.TAILSCALE_AUTH_KEY }}"}'
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-2\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
             --wait-for-state RUNNING
             --max-wait-seconds 600
           silent: false
