@@ -160,7 +160,7 @@ jobs:
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         run: |
           echo "💾 Cleaning up existing storage..."
-          
+
           # Find existing worker-1 data volume
           VOLUME_ID=$(oci bv volume list \
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
@@ -168,7 +168,7 @@ jobs:
             --lifecycle-state AVAILABLE \
             --query 'data[0].id' \
             --raw-output 2>/dev/null | tr -d '\n\r"')
-          
+
           if [ -n "$VOLUME_ID" ] && [ "$VOLUME_ID" != "null" ]; then
             echo "Found existing volume: $VOLUME_ID"
             
@@ -280,38 +280,6 @@ jobs:
           echo "👷 Worker-2 instance created successfully"
           echo "Instance details: ${{ steps.create_worker2.outputs.output }}"
 
-
-
-  # ============================================================================
-  # PHASE 3: INFRASTRUCTURE SETUP (Parallel where possible)
-  # ============================================================================
-  setup-networking:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [create-controller, create-worker1-with-storage, create-worker2]
-    if: always() && needs.create-controller.result == 'success' && needs.create-worker1-with-storage.result == 'success' && needs.create-worker2.result == 'success'
-
-    steps:
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          chmod 700 ~/.ssh
-          echo "🔑 SSH keys configured"
-
-      - name: Setup Tailscale for GitHub Actions
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
-          tags: tag:private-deploy
-
-      - name: Networking setup complete
-        run: |
-          echo "🌐 Networking setup completed"
-          echo "✅ SSH configured"
-          echo "✅ Tailscale connected"
-
   create-worker1-with-storage:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -396,12 +364,44 @@ jobs:
           echo "Volume ID: ${{ steps.parse_attachment_ids.outputs.volume_id }}"
 
   # ============================================================================
+  # PHASE 3: INFRASTRUCTURE SETUP (Parallel where possible)
+  # ============================================================================
+  setup-networking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [create-controller, create-worker1-with-storage, create-worker2]
+    if: always() && needs.create-controller.result == 'success' && needs.create-worker1-with-storage.result == 'success' && needs.create-worker2.result == 'success'
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+          echo "🔑 SSH keys configured"
+
+      - name: Setup Tailscale for GitHub Actions
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Networking setup complete
+        run: |
+          echo "🌐 Networking setup completed"
+          echo "✅ SSH configured"
+          echo "✅ Tailscale connected"
+
+
+
+  # ============================================================================
   # PHASE 4: WAIT FOR NODES (Sequential - needs all infrastructure)
   # ============================================================================
   wait-for-nodes:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [setup-networking, attach-storage]
+    needs: [setup-networking]
     if: always() && needs.setup-networking.result == 'success'
 
     steps:
@@ -421,7 +421,7 @@ jobs:
       - name: Wait for all nodes to be accessible
         run: |
           echo "⏳ Waiting for all nodes to be accessible via Tailscale..."
-          
+
           echo "Current Tailscale status:"
           tailscale status
           echo ""
@@ -464,19 +464,19 @@ jobs:
       - name: Refresh Tailscale connection and DNS
         run: |
           echo "🔄 Refreshing Tailscale connection now that all nodes are online..."
-          
+
           # Show current Tailscale status
           echo "Current Tailscale peers:"
           tailscale status
           echo ""
-          
+
           # Force refresh of Tailscale DNS and peer list
           echo "Refreshing DNS cache..."
           tailscale status --json | jq '.Self.HostName' || echo "No hostname in status"
-          
+
           # Wait a moment for DNS to propagate
           sleep 10
-          
+
           echo "Testing DNS resolution for k8s nodes..."
           for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
             echo "Resolving $hostname..."
@@ -676,7 +676,7 @@ jobs:
       - name: Verify cluster formation
         run: |
           echo "🔍 Verifying cluster formation..."
-          
+
           # Wait for nodes to appear in cluster
           echo "Waiting for nodes to be ready in cluster..."
           sleep 60
