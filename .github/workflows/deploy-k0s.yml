@@ -264,7 +264,7 @@ jobs:
             --shape "VM.Standard.A1.Flex"
             --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
-            --subnet-id "${{ secrets.OCI_SUBNET_ID }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml
             --display-name "k8s-controller"
             --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-controller\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
@@ -296,7 +296,7 @@ jobs:
             --shape "VM.Standard.A1.Flex"
             --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
-            --subnet-id "${{ secrets.OCI_SUBNET_ID }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
             --display-name "k8s-worker-1"
             --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-1\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
@@ -351,7 +351,7 @@ jobs:
             --shape "VM.Standard.A1.Flex"
             --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
             --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
-            --subnet-id "${{ secrets.OCI_SUBNET_ID }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
             --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
             --display-name "k8s-worker-2"
             --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-2\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
