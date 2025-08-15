@@ -76,38 +76,85 @@ jobs:
           done
           echo "✅ Tailscale cleanup complete"
 
-      - name: Terminate existing instances
+      - name: Terminate controller instance
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: terminate_controller
+        continue-on-error: true
+        with:
+          command: >-
+            compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+            --query "data[?contains(\"display-name\", \`k8s-controller\`)].id | [0]"
+            --raw-output
+          silent: false
+
+      - name: Terminate controller if found
+        if: steps.terminate_controller.outputs.output != '' && steps.terminate_controller.outputs.output != 'null' && steps.terminate_controller.outputs.output != '[]'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute instance terminate
+            --instance-id "${{ steps.terminate_controller.outputs.output }}"
+            --force
+          silent: false
+
+      - name: Terminate worker-1 instance
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: terminate_worker1
+        continue-on-error: true
+        with:
+          command: >-
+            compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+            --query "data[?contains(\"display-name\", \`k8s-worker-1\`)].id | [0]"
+            --raw-output
+          silent: false
+
+      - name: Terminate worker-1 if found
+        if: steps.terminate_worker1.outputs.output != '' && steps.terminate_worker1.outputs.output != 'null' && steps.terminate_worker1.outputs.output != '[]'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute instance terminate
+            --instance-id "${{ steps.terminate_worker1.outputs.output }}"
+            --force
+          silent: false
+
+      - name: Terminate worker-2 instance
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: terminate_worker2
+        continue-on-error: true
+        with:
+          command: >-
+            compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+            --query "data[?contains(\"display-name\", \`k8s-worker-2\`)].id | [0]"
+            --raw-output
+          silent: false
+
+      - name: Terminate worker-2 if found
+        if: steps.terminate_worker2.outputs.output != '' && steps.terminate_worker2.outputs.output != 'null' && steps.terminate_worker2.outputs.output != '[]'
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute instance terminate
+            --instance-id "${{ steps.terminate_worker2.outputs.output }}"
+            --force
+          silent: false
+
+      - name: Confirm instance termination
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         run: |
-          echo "🗑️ Terminating existing instances..."
-          
-          # Function to find and terminate instance
-          terminate_instance() {
-            local instance_name=$1
-            echo "Finding $instance_name..."
-            
-            INSTANCE_ID=$(oci compute instance list \
-              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
-              --lifecycle-state RUNNING \
-              --query "data[?contains(\"display-name\", \`$instance_name\`)].id | [0]" \
-              --raw-output 2>/dev/null | tr -d '\n\r"')
-            
-            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ] && [ "$INSTANCE_ID" != "[]" ]; then
-              echo "Terminating $instance_name (ID: $INSTANCE_ID)..."
-              oci compute instance terminate --instance-id "$INSTANCE_ID" --force
-              echo "✅ $instance_name terminated"
-            else
-              echo "ℹ️ $instance_name not found or already terminated"
-            fi
-          }
-          
-          # Terminate all instances in parallel
-          terminate_instance "k8s-controller" &
-          terminate_instance "k8s-worker-1" &
-          terminate_instance "k8s-worker-2" &
-          wait
-          
-          echo "✅ All instances terminated"
+          echo "✅ Instance termination commands sent"
+          echo "Controller ID: ${{ steps.terminate_controller.outputs.output }}"
+          echo "Worker-1 ID: ${{ steps.terminate_worker1.outputs.output }}"
+          echo "Worker-2 ID: ${{ steps.terminate_worker2.outputs.output }}"
 
       - name: Clean up existing storage
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
