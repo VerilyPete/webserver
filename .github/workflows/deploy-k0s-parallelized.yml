@@ -52,7 +52,7 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?contains("display-name", `k8s-`)].{id: id, name: "display-name"}'
+          query: 'data[?contains(\"display-name\", `k8s-`)].{id: id, name: \"display-name\"}'
           silent: false
 
       - name: Clean up existing K8s instances and Tailscale entries
