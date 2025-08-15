@@ -981,7 +981,9 @@ jobs:
             
             # Test connectivity using a job instead of interactive pod
             echo "Testing web service connectivity..."
-            sudo /usr/local/bin/k0s kubectl apply -f - <<TESTJOB
+            
+            # Create test job manifest
+            cat > /tmp/test-connectivity-job.yaml << 'JOBEND'
             apiVersion: batch/v1
             kind: Job
             metadata:
@@ -997,7 +999,10 @@ jobs:
                     image: docker.io/curlimages/curl:latest
                     command: ["curl"]
                     args: ["-s", "-o", "/dev/null", "-w", "HTTP Status: %{http_code}\n", "http://webserver-service"]
-            TESTJOB
+          JOBEND
+            
+            # Apply the job
+            sudo /usr/local/bin/k0s kubectl apply -f /tmp/test-connectivity-job.yaml
             
             # Wait for job completion
             echo "Waiting for connectivity test to complete..."
@@ -1009,6 +1014,7 @@ jobs:
             
             # Clean up
             sudo /usr/local/bin/k0s kubectl delete job test-connectivity -n webserver
+            rm -f /tmp/test-connectivity-job.yaml
           EOF
 
       - name: Display deployment summary
