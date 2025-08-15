@@ -58,23 +58,27 @@ jobs:
       - name: Clean up existing K8s instances and Tailscale entries
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         run: |
-          echo "🧹 Found existing K8s instances, cleaning up..."
+          echo "Found existing K8s instances, cleaning up..."
 
           # Remove from Tailscale first
-          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
-            echo "Removing $hostname from Tailscale..."
-            DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-              "https://api.tailscale.com/api/v2/tailnet/-/devices")
-            nodeId=$(echo "$DEVICE_RESPONSE" | \
-              jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
-            if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
-              curl -s -X DELETE \
-                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                "https://api.tailscale.com/api/v2/device/$nodeId"
-              echo "✅ Removed $hostname from Tailscale"
-            fi
-          done
-          echo "✅ Tailscale cleanup complete"
+            for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+              echo "Removing $hostname from Tailscale..."
+
+              DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/tailnet/-/devices")
+
+              nodeId=$(echo "$DEVICE_RESPONSE" | \
+                jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
+
+              if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
+                curl -s -X DELETE \
+                  -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                  "https://api.tailscale.com/api/v2/device/$nodeId"
+                echo "✅ Removed $hostname from Tailscale"
+              fi
+                           done
+
+           echo "Tailscale cleanup complete"
 
       - name: Terminate controller instance
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
@@ -741,7 +745,9 @@ jobs:
             sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 storage=local --overwrite
 
             echo "💾 Creating PersistentVolumes..."
-            sudo /usr/local/bin/k0s kubectl apply -f - <<'PV'
+            
+            # Create prometheus PV
+            cat > /tmp/prometheus-pv.yaml << 'PVEND'
             apiVersion: v1
             kind: PersistentVolume
             metadata:
@@ -763,7 +769,10 @@ jobs:
                       operator: In
                       values:
                       - k8s-worker-1
-            ---
+          PVEND
+            
+            # Create grafana PV
+            cat > /tmp/grafana-pv.yaml << 'PVEND'
             apiVersion: v1
             kind: PersistentVolume
             metadata:
@@ -785,7 +794,14 @@ jobs:
                       operator: In
                       values:
                       - k8s-worker-1
-            PV
+          PVEND
+            
+            # Apply the PVs
+            sudo /usr/local/bin/k0s kubectl apply -f /tmp/prometheus-pv.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f /tmp/grafana-pv.yaml
+            
+            # Clean up temp files
+            rm -f /tmp/prometheus-pv.yaml /tmp/grafana-pv.yaml
 
             echo "✅ Nodes labeled and storage configured"
             sudo /usr/local/bin/k0s kubectl get nodes --show-labels
