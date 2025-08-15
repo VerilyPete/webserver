@@ -331,25 +331,18 @@ jobs:
     if: always() && needs.create-worker1.result == 'success' && needs.create-storage.result == 'success'
 
     steps:
-      - name: Setup OCI CLI
-        uses: oracle-actions/configure-oci-cli@v1.3.2
-        with:
-          user: ${{ secrets.OCI_CLI_USER }}
-          tenancy: ${{ secrets.OCI_CLI_TENANCY }}
-          fingerprint: ${{ secrets.OCI_CLI_FINGERPRINT }}
-          key_content: ${{ secrets.OCI_CLI_KEY_CONTENT }}
-          region: ${{ secrets.OCI_CLI_REGION }}
-
-      - name: Parse and attach storage to worker-1
+      - name: Debug job outputs
         run: |
-          echo "💾 Attaching storage to worker-1..."
-          
+          echo "💾 Debugging storage attachment..."
+          echo "Worker output: '${{ needs.create-worker1.outputs.worker1_output }}'"
+          echo "Volume output: '${{ needs.create-storage.outputs.volume_output }}'"
+
+      - name: Parse worker and volume IDs
+        id: parse_ids
+        run: |
           # Parse JSON output to extract IDs
           WORKER_OUTPUT='${{ needs.create-worker1.outputs.worker1_output }}'
           VOLUME_OUTPUT='${{ needs.create-storage.outputs.volume_output }}'
-          
-          echo "Debug - Worker output: $WORKER_OUTPUT"
-          echo "Debug - Volume output: $VOLUME_OUTPUT"
           
           # Clean and parse JSON (remove outer quotes and unescape)
           WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
@@ -359,8 +352,8 @@ jobs:
           WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
           VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
           
-          echo "Worker ID: $WORKER_ID"
-          echo "Volume ID: $VOLUME_ID"
+          echo "Parsed Worker ID: $WORKER_ID"
+          echo "Parsed Volume ID: $VOLUME_ID"
           
           # Validate IDs are not empty
           if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
@@ -375,15 +368,26 @@ jobs:
             exit 1
           fi
           
-          # Attach volume using OCI CLI
-          echo "Attaching volume $VOLUME_ID to worker $WORKER_ID..."
-          oci compute volume-attachment attach \
-            --instance-id "$WORKER_ID" \
-            --type paravirtualized \
-            --volume-id "$VOLUME_ID" \
+          # Set outputs for next step
+          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
+          echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
+
+      - name: Attach storage to worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute volume-attachment attach
+            --instance-id "${{ steps.parse_ids.outputs.worker_id }}"
+            --type paravirtualized
+            --volume-id "${{ steps.parse_ids.outputs.volume_id }}"
             --wait-for-state ATTACHED
-          
+          silent: false
+
+      - name: Confirm storage attachment
+        run: |
           echo "✅ Storage attached to worker-1"
+          echo "Worker ID: ${{ steps.parse_ids.outputs.worker_id }}"
+          echo "Volume ID: ${{ steps.parse_ids.outputs.volume_id }}"
 
   # ============================================================================
   # PHASE 4: WAIT FOR NODES (Sequential - needs all infrastructure)
