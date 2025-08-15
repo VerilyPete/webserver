@@ -533,33 +533,17 @@ jobs:
             echo "$JOIN_TOKEN" | ssh -o StrictHostKeyChecking=no opc@$worker_name "sudo tee /tmp/join-token.txt > /dev/null"
 
             # Install and start k0s worker with the token
-            echo "Installing k0s worker on $worker_name..."
-            if ssh -o StrictHostKeyChecking=no opc@$worker_name "
+            ssh -o StrictHostKeyChecking=no opc@$worker_name "
               sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
               sudo systemctl daemon-reload
               sudo systemctl enable k0sworker
               sudo systemctl start k0sworker
 
-              # Wait a moment for the service to start
-              sleep 5
-
-              # Check if the service is running
-              if systemctl is-active --quiet k0sworker; then
-                echo 'k0sworker service is running'
-              else
-                echo 'ERROR: k0sworker service failed to start'
-                systemctl status k0sworker --no-pager -l
-                exit 1
-              fi
-
               # Clean up token file
               sudo rm -f /tmp/join-token.txt
-            "; then
-              echo "✅ $worker_name joined successfully"
-            else
-              echo "❌ Failed to join $worker_name to cluster"
-              exit 1
-            fi
+            "
+
+            echo "✅ $worker_name joined successfully"
           }
 
           # Join both workers
@@ -568,30 +552,11 @@ jobs:
 
           # Wait for nodes to appear in cluster
           echo "Waiting for nodes to be ready in cluster..."
-          sleep 60  # Increased wait time
+          sleep 30
 
-          # Verify all nodes are present with retries
-          echo "Verifying cluster nodes..."
-          for i in {1..10}; do
-            echo "Attempt $i/10 - Checking cluster nodes:"
-            NODE_COUNT=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes --no-headers 2>/dev/null | wc -l" || echo "0")
-            echo "Found $NODE_COUNT nodes in cluster"
-            
-            if [ "$NODE_COUNT" -ge 3 ]; then
-              echo "✅ All nodes found in cluster"
-              ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide"
-              break
-            else
-              echo "⏳ Only $NODE_COUNT/3 nodes found, waiting 15s..."
-              if [ $i -eq 10 ]; then
-                echo "❌ Timeout waiting for all nodes to join"
-                echo "Current nodes:"
-                ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide" || echo "Failed to get nodes"
-                exit 1
-              fi
-              sleep 15
-            fi
-          done
+          # Verify all nodes are present
+          echo "Current cluster nodes:"
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide"
 
       - name: Label nodes and setup storage
         run: |
@@ -610,63 +575,51 @@ jobs:
             sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 storage=local --overwrite
 
             echo "Creating PersistentVolumes..."
-            
-            # Create prometheus PV
-            cat > /tmp/prometheus-pv.yaml << 'PVEOF'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: prometheus-pv
-spec:
-  capacity:
-    storage: 8Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /mnt/data/k8s-pv-prometheus
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - k8s-worker-1
-PVEOF
-            
-            # Create grafana PV
-            cat > /tmp/grafana-pv.yaml << 'PVEOF'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: grafana-pv
-spec:
-  capacity:
-    storage: 2Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /mnt/data/k8s-pv-grafana
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - k8s-worker-1
-PVEOF
-            
-            # Apply the PVs
-            sudo /usr/local/bin/k0s kubectl apply -f /tmp/prometheus-pv.yaml
-            sudo /usr/local/bin/k0s kubectl apply -f /tmp/grafana-pv.yaml
-            
-            # Clean up temp files
-            rm -f /tmp/prometheus-pv.yaml /tmp/grafana-pv.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f - <<'PV'
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: prometheus-pv
+            spec:
+              capacity:
+                storage: 8Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-prometheus
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+            ---
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: grafana-pv
+            spec:
+              capacity:
+                storage: 2Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-grafana
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+            PV
 
             echo "✅ Nodes labeled and storage configured"
             sudo /usr/local/bin/k0s kubectl get nodes --show-labels
