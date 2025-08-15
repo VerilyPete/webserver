@@ -577,16 +577,17 @@ jobs:
             NODE_COUNT=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes --no-headers 2>/dev/null | wc -l" || echo "0")
             echo "Found $NODE_COUNT nodes in cluster"
             
-            if [ "$NODE_COUNT" -ge 3 ]; then
-              echo "✅ All nodes found in cluster"
+            if [ "$NODE_COUNT" -ge 2 ]; then
+              echo "✅ All worker nodes found in cluster (controller is controller-only)"
               ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide"
               break
             else
-              echo "⏳ Only $NODE_COUNT/3 nodes found, waiting 15s..."
+              echo "⏳ Only $NODE_COUNT/2 worker nodes found, waiting 15s..."
               if [ $i -eq 10 ]; then
-                echo "❌ Timeout waiting for all nodes to join"
+                echo "❌ Timeout waiting for worker nodes to join"
                 echo "Current nodes:"
                 ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide" || echo "Failed to get nodes"
+                echo "Note: Controller is controller-only and won't appear as a node"
                 exit 1
               fi
               sleep 15
