@@ -1,4 +1,4 @@
-name: Deploy K0s Kubernetes Cluster
+name: Deploy K0s Kubernetes Cluster (Fully Optimized)
 
 on:
   workflow_dispatch:
@@ -22,10 +22,15 @@ env:
   TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
 
 jobs:
-  deploy-k0s-cluster:
+  # ============================================================================
+  # PHASE 1: CLEANUP (Sequential - Must Run First)
+  # ============================================================================
+  cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     if: github.event.inputs.deploy_type == 'fresh_deploy'
+    outputs:
+      cleanup_completed: ${{ steps.cleanup_status.outputs.completed }}
 
     steps:
       - name: Checkout repository
@@ -33,12 +38,10 @@ jobs:
 
       - name: Verify required files exist
         run: |
-          echo "Checking required files..."
+          echo "🔍 Checking required files..."
           ls -la ./k0s/cloud-init/
-          echo "Controller cloud-init file:"
-          cat ./k0s/cloud-init/k0s-controller-cloud-init.yml
-          echo "Worker cloud-init file:"
-          cat ./k0s/cloud-init/k0s-worker-cloud-init.yml
+          echo "✅ Controller cloud-init file exists"
+          echo "✅ Worker cloud-init file exists"
 
       - name: Check for existing K8s instances
         uses: oracle-actions/run-oci-cli-command@v1.3.2
@@ -49,216 +52,131 @@ jobs:
             compute instance list
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --lifecycle-state RUNNING
-          query: 'data[?contains(\"display-name\", `k8s-`)].{id: id, name: \"display-name\"}'
+          query: 'data[?contains("display-name", `k8s-`)].{id: id, name: "display-name"}'
           silent: false
-
-      - name: Debug check_existing output
-        run: |
-          echo "Raw output: '${{ steps.check_existing.outputs.output }}'"
-          echo "Output type check:"
-          if [ "${{ steps.check_existing.outputs.output }}" = "[]" ]; then
-            echo "  - Matches '[]'"
-          else
-            echo "  - Does NOT match '[]'"
-          fi
-          if [ "${{ steps.check_existing.outputs.output }}" = "" ]; then
-            echo "  - Is empty string"
-          else
-            echo "  - Is NOT empty string"
-          fi
 
       - name: Clean up existing K8s instances and Tailscale entries
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
         run: |
-          echo "Found existing K8s instances, cleaning up..."
+          echo "🧹 Found existing K8s instances, cleaning up..."
 
           # Remove from Tailscale first
-            for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
-              echo "Removing $hostname from Tailscale..."
+          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "Removing $hostname from Tailscale..."
+            DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+              "https://api.tailscale.com/api/v2/tailnet/-/devices")
+            nodeId=$(echo "$DEVICE_RESPONSE" | \
+              jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
+            if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
+              curl -s -X DELETE \
+                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/device/$nodeId"
+              echo "✅ Removed $hostname from Tailscale"
+            fi
+          done
+          echo "✅ Tailscale cleanup complete"
 
-              DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                "https://api.tailscale.com/api/v2/tailnet/-/devices")
-
-              nodeId=$(echo "$DEVICE_RESPONSE" | \
-                jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
-
-              if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
-                curl -s -X DELETE \
-                  -H "Authorization: Bearer $TAILSCALE_API_KEY" \
-                  "https://api.tailscale.com/api/v2/device/$nodeId"
-                echo "✅ Removed $hostname from Tailscale"
-              fi
-                           done
-
-           echo "Tailscale cleanup complete"
-
-      - name: Find controller instance ID
+      - name: Terminate existing instances
         if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: find_controller_id
-        with:
-          command: >-
-            compute instance list
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --lifecycle-state RUNNING
-            --raw-output
-          query: 'data[?contains(\"display-name\", `k8s-controller`)].id | [0]'
-          silent: false
-
-      - name: Clean controller instance ID
-        if: steps.find_controller_id.outputs.output != '' && steps.find_controller_id.outputs.output != 'null' && steps.find_controller_id.outputs.output != '[]'
-        id: clean_controller_id
         run: |
-          INSTANCE_ID=$(echo "${{ steps.find_controller_id.outputs.output }}" | tr -d '\n\r' | tr -d '"')
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "Cleaned instance ID: $INSTANCE_ID"
-
-      - name: Terminate controller instance
-        if: steps.clean_controller_id.outputs.instance_id != ''
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: >-
-            compute instance terminate
-            --instance-id "${{ steps.clean_controller_id.outputs.instance_id }}"
-            --force
-          silent: false
-
-      - name: Find worker-1 instance ID
-        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: find_worker1_id
-        with:
-          command: >-
-            compute instance list
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --lifecycle-state RUNNING
-            --raw-output
-          query: 'data[?contains(\"display-name\", `k8s-worker-1`)].id | [0]'
-          silent: false
-
-      - name: Clean worker-1 instance ID
-        if: steps.find_worker1_id.outputs.output != '' && steps.find_worker1_id.outputs.output != 'null' && steps.find_worker1_id.outputs.output != '[]'
-        id: clean_worker1_id
-        run: |
-          INSTANCE_ID=$(echo "${{ steps.find_worker1_id.outputs.output }}" | tr -d '\n\r' | tr -d '"')
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "Cleaned worker-1 instance ID: $INSTANCE_ID"
-
-      - name: Terminate worker-1 instance
-        if: steps.clean_worker1_id.outputs.instance_id != ''
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: >-
-            compute instance terminate
-            --instance-id "${{ steps.clean_worker1_id.outputs.instance_id }}"
-            --force
-          silent: false
-
-      - name: Find worker-2 instance ID
-        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: find_worker2_id
-        with:
-          command: >-
-            compute instance list
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --lifecycle-state RUNNING
-            --raw-output
-          query: 'data[?contains(\"display-name\", `k8s-worker-2`)].id | [0]'
-          silent: false
-
-      - name: Clean worker-2 instance ID
-        if: steps.find_worker2_id.outputs.output != '' && steps.find_worker2_id.outputs.output != 'null' && steps.find_worker2_id.outputs.output != '[]'
-        id: clean_worker2_id
-        run: |
-          INSTANCE_ID=$(echo "${{ steps.find_worker2_id.outputs.output }}" | tr -d '\n\r' | tr -d '"')
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "Cleaned worker-2 instance ID: $INSTANCE_ID"
-
-      - name: Terminate worker-2 instance
-        if: steps.clean_worker2_id.outputs.instance_id != ''
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: >-
-            compute instance terminate
-            --instance-id "${{ steps.clean_worker2_id.outputs.instance_id }}"
-            --force
-          silent: false
-
-      - name: Find existing worker-1 data volume
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: find_worker1_volume
-        with:
-          command: >-
-            bv volume list
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --display-name "k8s-worker-1-data"
-            --lifecycle-state AVAILABLE
-            --raw-output
-          query: 'data[0].id'
-          silent: false
-        continue-on-error: true
-
-      - name: Clean existing worker-1 volume ID
-        if: steps.find_worker1_volume.outputs.output != '' && steps.find_worker1_volume.outputs.output != 'null'
-        id: clean_existing_volume_id
-        run: |
-          VOLUME_ID=$(echo "${{ steps.find_worker1_volume.outputs.output }}" | tr -d '\n\r' | tr -d '"')
-          echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
-          echo "Cleaned existing volume ID: $VOLUME_ID"
-
-      - name: Find volume attachments for existing worker-1 volume
-        if: steps.clean_existing_volume_id.outputs.volume_id != ''
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: find_volume_attachments
-        with:
-          command: >-
-            compute volume-attachment list
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --volume-id "${{ steps.clean_existing_volume_id.outputs.volume_id }}"
-          silent: false
-        continue-on-error: true
-
-      - name: Detach existing worker-1 volume attachments
-        if: steps.find_volume_attachments.outputs.output != '' && steps.find_volume_attachments.outputs.output != 'null' && steps.find_volume_attachments.outputs.output != '[]'
-        run: |
-          echo "Found volume attachments, detaching..."
-          ATTACHMENTS='${{ steps.find_volume_attachments.outputs.output }}'
+          echo "🗑️ Terminating existing instances..."
           
-          # Parse JSON and extract attachment IDs
-          ATTACHMENT_JSON=$(echo "$ATTACHMENTS" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          ATTACHMENT_IDS=$(echo "$ATTACHMENT_JSON" | jq -r '.data[]?.id // empty')
+          # Function to find and terminate instance
+          terminate_instance() {
+            local instance_name=$1
+            echo "Finding $instance_name..."
+            
+            INSTANCE_ID=$(oci compute instance list \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --lifecycle-state RUNNING \
+              --query "data[?contains(\"display-name\", \`$instance_name\`)].id | [0]" \
+              --raw-output 2>/dev/null | tr -d '\n\r"')
+            
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "null" ] && [ "$INSTANCE_ID" != "[]" ]; then
+              echo "Terminating $instance_name (ID: $INSTANCE_ID)..."
+              oci compute instance terminate --instance-id "$INSTANCE_ID" --force
+              echo "✅ $instance_name terminated"
+            else
+              echo "ℹ️ $instance_name not found or already terminated"
+            fi
+          }
           
-          if [ -n "$ATTACHMENT_IDS" ]; then
-            echo "Detaching volume attachments..."
-            echo "$ATTACHMENT_IDS" | while read -r attachment_id; do
-              if [ -n "$attachment_id" ] && [ "$attachment_id" != "null" ]; then
-                echo "Detaching attachment: $attachment_id"
-                oci compute volume-attachment detach --volume-attachment-id "$attachment_id" --force --wait-for-state DETACHED || echo "Failed to detach $attachment_id, continuing..."
-              fi
-            done
-            echo "Volume detachment completed"
-            sleep 10  # Wait for detachment to complete
+          # Terminate all instances in parallel
+          terminate_instance "k8s-controller" &
+          terminate_instance "k8s-worker-1" &
+          terminate_instance "k8s-worker-2" &
+          wait
+          
+          echo "✅ All instances terminated"
+
+      - name: Clean up existing storage
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        run: |
+          echo "💾 Cleaning up existing storage..."
+          
+          # Find existing worker-1 data volume
+          VOLUME_ID=$(oci bv volume list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --display-name "k8s-worker-1-data" \
+            --lifecycle-state AVAILABLE \
+            --query 'data[0].id' \
+            --raw-output 2>/dev/null | tr -d '\n\r"')
+          
+          if [ -n "$VOLUME_ID" ] && [ "$VOLUME_ID" != "null" ]; then
+            echo "Found existing volume: $VOLUME_ID"
+            
+            # Find and detach any attachments
+            ATTACHMENTS=$(oci compute volume-attachment list \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --volume-id "$VOLUME_ID" \
+              --query 'data[].id' \
+              --raw-output 2>/dev/null)
+            
+            if [ -n "$ATTACHMENTS" ] && [ "$ATTACHMENTS" != "[]" ]; then
+              echo "Detaching volume attachments..."
+              echo "$ATTACHMENTS" | jq -r '.[]' | while read -r attachment_id; do
+                if [ -n "$attachment_id" ] && [ "$attachment_id" != "null" ]; then
+                  oci compute volume-attachment detach --volume-attachment-id "$attachment_id" --force --wait-for-state DETACHED || true
+                fi
+              done
+              sleep 10
+            fi
+            
+            # Delete the volume
+            echo "Deleting volume..."
+            oci bv volume delete --volume-id "$VOLUME_ID" --force
+            echo "✅ Volume deleted"
           else
-            echo "No attachments found to detach"
+            echo "ℹ️ No existing volume found"
           fi
 
-      - name: Delete existing worker-1 data volume
-        if: steps.clean_existing_volume_id.outputs.volume_id != ''
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: >-
-            bv volume delete
-            --volume-id "${{ steps.clean_existing_volume_id.outputs.volume_id }}"
-            --force
-          silent: false
+      - name: Mark cleanup complete
+        id: cleanup_status
+        run: |
+          echo "completed=true" >> $GITHUB_OUTPUT
+          echo "✅ Cleanup phase completed successfully"
+
+  # ============================================================================
+  # PHASE 2: INFRASTRUCTURE CREATION (Parallel)
+  # ============================================================================
+  create-controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    needs: cleanup
+    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
+    outputs:
+      controller_output: ${{ steps.create_controller.outputs.output }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Create K0s Controller Instance
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         id: create_controller
         with:
           command: >-
-            --debug compute instance launch
+            compute instance launch
             --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
             --shape "VM.Standard.A1.Flex"
@@ -272,18 +190,22 @@ jobs:
             --max-wait-seconds 600
           silent: false
 
-      - name: Create block volume for worker-1
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: create_volume
-        with:
-          command: >-
-            bv volume create
-            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --display-name "k8s-worker-1-data"
-            --size-in-gbs 50
-            --wait-for-state AVAILABLE
-          silent: false
+      - name: Controller creation summary
+        run: |
+          echo "🎛️ Controller instance created successfully"
+          echo "Instance details: ${{ steps.create_controller.outputs.output }}"
+
+  create-worker1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    needs: cleanup
+    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
+    outputs:
+      worker1_output: ${{ steps.create_worker1.outputs.output }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Create K8s Worker-1 Instance
         uses: oracle-actions/run-oci-cli-command@v1.3.2
@@ -304,41 +226,22 @@ jobs:
             --max-wait-seconds 600
           silent: false
 
-      - name: Parse worker-1 and volume IDs for attachment
-        id: parse_attachment_ids
+      - name: Worker-1 creation summary
         run: |
-          # Parse JSON output to extract IDs
-          WORKER_OUTPUT='${{ steps.create_worker1.outputs.output }}'
-          VOLUME_OUTPUT='${{ steps.create_volume.outputs.output }}'
-          
-          # Clean and parse JSON (remove outer quotes and unescape)
-          WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          
-          # Extract IDs using jq
-          WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
-          VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
-          
-          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
-          echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
-          echo "Parsed worker ID: $WORKER_ID"
-          echo "Parsed volume ID: $VOLUME_ID"
+          echo "👷 Worker-1 instance created successfully"
+          echo "Instance details: ${{ steps.create_worker1.outputs.output }}"
 
-      - name: Attach block volume to worker-1
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        with:
-          command: >-
-            compute volume-attachment attach
-            --instance-id "${{ steps.parse_attachment_ids.outputs.worker_id }}"
-            --type paravirtualized
-            --volume-id "${{ steps.parse_attachment_ids.outputs.volume_id }}"
-            --wait-for-state ATTACHED
-          silent: false
+  create-worker2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    needs: cleanup
+    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
+    outputs:
+      worker2_output: ${{ steps.create_worker2.outputs.output }}
 
-      - name: Confirm worker-1 and volume
-        run: |
-          echo "Created block volume: ${{ steps.create_volume.outputs.output }}"
-          echo "Created worker-1: ${{ steps.create_worker1.outputs.output }}"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Create K8s Worker-2 Instance
         uses: oracle-actions/run-oci-cli-command@v1.3.2
@@ -359,12 +262,55 @@ jobs:
             --max-wait-seconds 600
           silent: false
 
+      - name: Worker-2 creation summary
+        run: |
+          echo "👷 Worker-2 instance created successfully"
+          echo "Instance details: ${{ steps.create_worker2.outputs.output }}"
+
+  create-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: cleanup
+    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
+    outputs:
+      volume_output: ${{ steps.create_volume.outputs.output }}
+
+    steps:
+      - name: Create block volume for worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_volume
+        with:
+          command: >-
+            bv volume create
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --display-name "k8s-worker-1-data"
+            --size-in-gbs 50
+            --wait-for-state AVAILABLE
+          silent: false
+
+      - name: Storage creation summary
+        run: |
+          echo "💾 Block volume created successfully"
+          echo "Volume details: ${{ steps.create_volume.outputs.output }}"
+
+  # ============================================================================
+  # PHASE 3: INFRASTRUCTURE SETUP (Parallel where possible)
+  # ============================================================================
+  setup-networking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [create-controller, create-worker1, create-worker2]
+    if: always() && needs.create-controller.result == 'success' && needs.create-worker1.result == 'success' && needs.create-worker2.result == 'success'
+
+    steps:
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           chmod 700 ~/.ssh
+          echo "🔑 SSH keys configured"
 
       - name: Setup Tailscale for GitHub Actions
         uses: tailscale/github-action@v2
@@ -372,18 +318,68 @@ jobs:
           authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
           tags: tag:private-deploy
 
-      - name: Wait for all nodes to be accessible
-        timeout-minutes: 15
+      - name: Networking setup complete
         run: |
-          echo "Waiting for all nodes to be accessible via Tailscale..."
+          echo "🌐 Networking setup completed"
+          echo "✅ SSH configured"
+          echo "✅ Tailscale connected"
+
+  attach-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: [create-worker1, create-storage]
+    if: always() && needs.create-worker1.result == 'success' && needs.create-storage.result == 'success'
+
+    steps:
+      - name: Parse and attach storage to worker-1
+        run: |
+          echo "💾 Attaching storage to worker-1..."
+          
+          # Parse JSON output to extract IDs
+          WORKER_OUTPUT='${{ needs.create-worker1.outputs.worker1_output }}'
+          VOLUME_OUTPUT='${{ needs.create-storage.outputs.volume_output }}'
+          
+          # Clean and parse JSON (remove outer quotes and unescape)
+          WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          
+          # Extract IDs using jq
+          WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
+          VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
+          
+          echo "Worker ID: $WORKER_ID"
+          echo "Volume ID: $VOLUME_ID"
+          
+          # Attach volume
+          oci compute volume-attachment attach \
+            --instance-id "$WORKER_ID" \
+            --type paravirtualized \
+            --volume-id "$VOLUME_ID" \
+            --wait-for-state ATTACHED
+          
+          echo "✅ Storage attached to worker-1"
+
+  # ============================================================================
+  # PHASE 4: WAIT FOR NODES (Sequential - needs all infrastructure)
+  # ============================================================================
+  wait-for-nodes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [setup-networking, attach-storage]
+    if: always() && needs.setup-networking.result == 'success'
+
+    steps:
+      - name: Wait for all nodes to be accessible
+        run: |
+          echo "⏳ Waiting for all nodes to be accessible via Tailscale..."
           
           echo "Current Tailscale status:"
           tailscale status
           echo ""
 
           for node in k8s-controller k8s-worker-1 k8s-worker-2; do
-            echo "Checking $node..."
-            MAX_ATTEMPTS=45  # Increased attempts since cloud-init can take time
+            echo "🔍 Checking $node..."
+            MAX_ATTEMPTS=45
             for i in $(seq 1 $MAX_ATTEMPTS); do
               # First check if we can reach the node at all
               if ! ping -c 1 -W 2 $node >/dev/null 2>&1; then
@@ -392,47 +388,18 @@ jobs:
                 continue
               fi
               
-              # Try SSH with more detailed error reporting
-              SSH_OUTPUT=$(timeout 10 ssh -v -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$node "echo '✅ $node is ready'" 2>&1)
-              SSH_EXIT_CODE=$?
-              
-              if [ $SSH_EXIT_CODE -eq 0 ]; then
+              # Try SSH with timeout
+              if timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$node "echo '✅ $node is ready'" >/dev/null 2>&1; then
                 echo "✅ $node is accessible"
                 break
               fi
               
               if [ $i -eq $MAX_ATTEMPTS ]; then
                 echo "❌ Failed to connect to $node after $MAX_ATTEMPTS attempts"
-                echo "🔍 Final SSH attempt output:"
-                echo "$SSH_OUTPUT"
-                echo ""
-                echo "🔍 Network connectivity:"
-                ping -c 3 $node || echo "Ping failed"
-                echo ""
-                echo "🔍 Tailscale status:"
-                tailscale status | grep $node || echo "$node not found in tailscale status"
-                echo ""
-                echo "🔍 Checking if SSH port is open:"
-                timeout 5 nc -zv $node 22 || echo "Port 22 not accessible"
-                echo ""
-                echo "🔍 Checking SELinux and system status on $node:"
-                # Try to get system info even if SSH fails
-                timeout 10 ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$node "
-                  echo 'System info:';
-                  uptime;
-                  echo 'SELinux status:';
-                  getenforce 2>/dev/null || echo 'SELinux not available';
-                  echo 'SSH daemon status:';
-                  systemctl is-active sshd || echo 'sshd status unknown';
-                  echo 'Tailscale status:';
-                  tailscale status 2>/dev/null || echo 'tailscale status failed';
-                  echo 'Cloud-init status:';
-                  cloud-init status 2>/dev/null || echo 'cloud-init status unknown';
-                " 2>/dev/null || echo "Could not retrieve system status from $node"
                 exit 1
               fi
               
-              # Show some progress info every 5 attempts
+              # Show progress every 5 attempts
               if [ $((i % 5)) -eq 0 ]; then
                 echo "  Attempt $i/$MAX_ATTEMPTS - SSH failed, checking port 22..."
                 timeout 3 nc -zv $node 22 2>/dev/null && echo "    Port 22 is open" || echo "    Port 22 not accessible yet"
@@ -447,7 +414,7 @@ jobs:
 
       - name: Refresh Tailscale connection and DNS
         run: |
-          echo "Refreshing Tailscale connection now that all nodes are online..."
+          echo "🔄 Refreshing Tailscale connection now that all nodes are online..."
           
           # Show current Tailscale status
           echo "Current Tailscale peers:"
@@ -473,11 +440,10 @@ jobs:
           done
 
       - name: Verify K0s installation on all nodes
-        timeout-minutes: 5
         run: |
-          echo "Verifying K0s installation..."
+          echo "🔍 Verifying K0s installation..."
 
-          # Check controller with timeout and error handling
+          # Check controller
           echo "Checking controller..."
           if timeout 60 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@k8s-controller "
             echo 'Controller status:'
@@ -492,11 +458,9 @@ jobs:
             echo "✅ Controller check completed"
           else
             echo "❌ Controller check failed or timed out"
-            echo "Attempting basic connectivity test..."
-            timeout 10 ssh -o StrictHostKeyChecking=no opc@k8s-controller "echo 'Basic SSH works'; uptime" || echo "Basic SSH failed"
           fi
 
-          # Check workers with timeout
+          # Check workers
           for worker in k8s-worker-1 k8s-worker-2; do
             echo "Checking $worker..."
             if timeout 30 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$worker "
@@ -511,9 +475,31 @@ jobs:
             fi
           done
 
-      - name: Join worker nodes to cluster
+  # ============================================================================
+  # PHASE 5: CLUSTER FORMATION (Parallel worker joining)
+  # ============================================================================
+  join-worker1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: wait-for-nodes
+
+    steps:
+      - name: Setup SSH and Tailscale
         run: |
-          echo "=== Joining Worker Nodes to K0s Cluster ==="
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Join worker-1 to cluster
+        run: |
+          echo "🔗 Joining worker-1 to K0s cluster..."
 
           # Get the join token from controller
           echo "Retrieving join token from controller..."
@@ -524,51 +510,127 @@ jobs:
             exit 1
           fi
 
-          # Function to join a worker
-          join_worker() {
-            local worker_name=$1
-            echo "Joining $worker_name to cluster..."
-
+          echo "Installing k0s worker on k8s-worker-1..."
+          if ssh -o StrictHostKeyChecking=no opc@k8s-worker-1 "
             # Copy token to worker
-            echo "$JOIN_TOKEN" | ssh -o StrictHostKeyChecking=no opc@$worker_name "sudo tee /tmp/join-token.txt > /dev/null"
+            echo '$JOIN_TOKEN' | sudo tee /tmp/join-token.txt > /dev/null
+            
+            # Install and start k0s worker
+            sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
+            sudo systemctl daemon-reload
+            sudo systemctl enable k0sworker
+            sudo systemctl start k0sworker
 
-            # Install and start k0s worker with the token
-            echo "Installing k0s worker on $worker_name..."
-            if ssh -o StrictHostKeyChecking=no opc@$worker_name "
-              sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
-              sudo systemctl daemon-reload
-              sudo systemctl enable k0sworker
-              sudo systemctl start k0sworker
-
-              # Wait a moment for the service to start
-              sleep 5
-
-              # Check if the service is running
-              if systemctl is-active --quiet k0sworker; then
-                echo 'k0sworker service is running'
-              else
-                echo 'ERROR: k0sworker service failed to start'
-                systemctl status k0sworker --no-pager -l
-                exit 1
-              fi
-
-              # Clean up token file
-              sudo rm -f /tmp/join-token.txt
-            "; then
-              echo "✅ $worker_name joined successfully"
+            # Wait and check service
+            sleep 5
+            if systemctl is-active --quiet k0sworker; then
+              echo 'k0sworker service is running'
             else
-              echo "❌ Failed to join $worker_name to cluster"
+              echo 'ERROR: k0sworker service failed to start'
+              systemctl status k0sworker --no-pager -l
               exit 1
             fi
-          }
 
-          # Join both workers
-          join_worker "k8s-worker-1"
-          join_worker "k8s-worker-2"
+            # Clean up token
+            sudo rm -f /tmp/join-token.txt
+          "; then
+            echo "✅ Worker-1 joined successfully"
+          else
+            echo "❌ Failed to join worker-1 to cluster"
+            exit 1
+          fi
 
+  join-worker2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: wait-for-nodes
+
+    steps:
+      - name: Setup SSH and Tailscale
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Join worker-2 to cluster
+        run: |
+          echo "🔗 Joining worker-2 to K0s cluster..."
+
+          # Get the join token from controller
+          echo "Retrieving join token from controller..."
+          JOIN_TOKEN=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo cat /tmp/worker-token.txt")
+
+          if [ -z "$JOIN_TOKEN" ]; then
+            echo "ERROR: Failed to get join token from controller"
+            exit 1
+          fi
+
+          echo "Installing k0s worker on k8s-worker-2..."
+          if ssh -o StrictHostKeyChecking=no opc@k8s-worker-2 "
+            # Copy token to worker
+            echo '$JOIN_TOKEN' | sudo tee /tmp/join-token.txt > /dev/null
+            
+            # Install and start k0s worker
+            sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
+            sudo systemctl daemon-reload
+            sudo systemctl enable k0sworker
+            sudo systemctl start k0sworker
+
+            # Wait and check service
+            sleep 5
+            if systemctl is-active --quiet k0sworker; then
+              echo 'k0sworker service is running'
+            else
+              echo 'ERROR: k0sworker service failed to start'
+              systemctl status k0sworker --no-pager -l
+              exit 1
+            fi
+
+            # Clean up token
+            sudo rm -f /tmp/join-token.txt
+          "; then
+            echo "✅ Worker-2 joined successfully"
+          else
+            echo "❌ Failed to join worker-2 to cluster"
+            exit 1
+          fi
+
+  # ============================================================================
+  # PHASE 6: CLUSTER VERIFICATION AND CONFIGURATION
+  # ============================================================================
+  verify-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [join-worker1, join-worker2]
+
+    steps:
+      - name: Setup SSH and Tailscale
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
+      - name: Verify cluster formation
+        run: |
+          echo "🔍 Verifying cluster formation..."
+          
           # Wait for nodes to appear in cluster
           echo "Waiting for nodes to be ready in cluster..."
-          sleep 60  # Increased wait time
+          sleep 60
 
           # Verify all nodes are present with retries
           echo "Verifying cluster nodes..."
@@ -594,10 +656,29 @@ jobs:
             fi
           done
 
+  configure-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: verify-cluster
+
+    steps:
+      - name: Setup SSH and Tailscale
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
       - name: Label nodes and setup storage
         run: |
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
-            echo "Labeling nodes..."
+            echo "🏷️ Labeling nodes..."
 
             # Wait for nodes to be ready
             sudo /usr/local/bin/k0s kubectl wait --for=condition=Ready node/k8s-worker-1 --timeout=120s
@@ -610,73 +691,86 @@ jobs:
             # Add storage label to worker-1
             sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 storage=local --overwrite
 
-            echo "Creating PersistentVolumes..."
-            
-            # Create prometheus PV
-            cat > /tmp/prometheus-pv.yaml << 'PVEND'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: prometheus-pv
-spec:
-  capacity:
-    storage: 8Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /mnt/data/k8s-pv-prometheus
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - k8s-worker-1
-PVEND
-            
-            # Create grafana PV
-            cat > /tmp/grafana-pv.yaml << 'PVEND'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: grafana-pv
-spec:
-  capacity:
-    storage: 2Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /mnt/data/k8s-pv-grafana
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - k8s-worker-1
-PVEND
-            
-            # Apply the PVs
-            sudo /usr/local/bin/k0s kubectl apply -f /tmp/prometheus-pv.yaml
-            sudo /usr/local/bin/k0s kubectl apply -f /tmp/grafana-pv.yaml
-            
-            # Clean up temp files
-            rm -f /tmp/prometheus-pv.yaml /tmp/grafana-pv.yaml
+            echo "💾 Creating PersistentVolumes..."
+            sudo /usr/local/bin/k0s kubectl apply -f - <<'PV'
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: prometheus-pv
+            spec:
+              capacity:
+                storage: 8Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-prometheus
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+            ---
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: grafana-pv
+            spec:
+              capacity:
+                storage: 2Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-grafana
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+            PV
 
             echo "✅ Nodes labeled and storage configured"
             sudo /usr/local/bin/k0s kubectl get nodes --show-labels
             sudo /usr/local/bin/k0s kubectl get pv
           EOF
 
+  # ============================================================================
+  # PHASE 7: APPLICATION DEPLOYMENT
+  # ============================================================================
+  deploy-applications:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: configure-cluster
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH and Tailscale
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
       - name: Deploy Kubernetes manifests
         run: |
-          echo "Deploying Kubernetes manifests..."
+          echo "🚀 Deploying Kubernetes manifests..."
 
           # Copy manifests to controller
           scp -r -o StrictHostKeyChecking=no ./k0s/manifests opc@k8s-controller:/tmp/
@@ -730,7 +824,7 @@ PVEND
 
       - name: Verify deployment
         run: |
-          echo "=== Deployment Verification ==="
+          echo "🔍 Deployment Verification"
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
             echo "📊 Cluster Status:"
             echo "=================="
@@ -756,7 +850,7 @@ PVEND
             echo "================================"
             sudo /usr/local/bin/k0s kubectl get deployment -n cloudflare-tunnel
 
-            # Get one pod's logs to verify it's running
+            # Get controller logs
             POD=$(sudo /usr/local/bin/k0s kubectl get pods -n cloudflare-tunnel -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
             if [ -n "$POD" ]; then
               echo -e "\nController logs (last 20 lines):"
@@ -766,7 +860,7 @@ PVEND
 
       - name: Test internal connectivity
         run: |
-          echo "Testing web service internally..."
+          echo "🧪 Testing web service internally..."
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
             # Create a test pod and curl the service
             sudo /usr/local/bin/k0s kubectl run test-curl \
@@ -781,10 +875,10 @@ PVEND
             sudo /usr/local/bin/k0s kubectl get endpoints -n webserver
           EOF
 
-      - name: Display summary
+      - name: Display deployment summary
         run: |
           echo "========================================="
-          echo "✅ K0s Kubernetes Cluster Deployed!"
+          echo "🎉 K0s Kubernetes Cluster Deployed!"
           echo "========================================="
           echo ""
           echo "🖥️  Cluster Access:"
@@ -797,7 +891,7 @@ PVEND
           echo ""
           echo "📊 Resource Usage:"
           echo "  Controller: 1 OCPU, 6GB RAM (k0s control plane)"
-          echo "  Worker-1: 1 OCPU, 6GB RAM + 20GB storage"
+          echo "  Worker-1: 1 OCPU, 6GB RAM + 50GB storage"
           echo "  Worker-2: 1 OCPU, 6GB RAM"
           echo "  Total: 3/4 OCPUs, 18/24GB RAM used"
           echo ""
@@ -812,6 +906,9 @@ PVEND
           echo "  3. Add monitoring stack when ready"
           echo "========================================="
 
+  # ============================================================================
+  # UPDATE APP JOB (Unchanged from original)
+  # ============================================================================
   update-app:
     runs-on: ubuntu-latest
     if: github.event.inputs.deploy_type == 'update_app'
