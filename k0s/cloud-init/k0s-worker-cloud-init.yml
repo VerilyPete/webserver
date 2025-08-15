@@ -177,6 +177,32 @@ runcmd:
       exit 1
     fi
 
+  # Configure firewall for K0s cluster communication
+  - |
+    echo "Configuring firewall for cluster communication..."
+    if systemctl is-enabled firewalld >/dev/null 2>&1; then
+      echo "Firewalld is enabled, configuring rules..."
+      
+      # Allow traffic from private subnet (adjust subnet as needed)
+      sudo firewall-cmd --permanent --add-source=10.0.1.0/24
+      
+      # Allow specific K0s ports
+      sudo firewall-cmd --permanent --add-port=10250/tcp # Kubelet API
+      sudo firewall-cmd --permanent --add-port=30000-32767/tcp # NodePort services
+      sudo firewall-cmd --permanent --add-port=8472/udp  # flannel/vxlan
+      
+      # Allow SSH for management
+      sudo firewall-cmd --permanent --add-service=ssh
+      
+      # Reload firewall rules
+      sudo firewall-cmd --reload
+      
+      echo "Firewall configured for K0s worker"
+      sudo firewall-cmd --list-all
+    else
+      echo "Firewalld not enabled, skipping firewall configuration"
+    fi
+
   # Setup Tailscale for connectivity
   - |
     # Get metadata from OCI metadata service (custom metadata)
