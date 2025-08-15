@@ -297,8 +297,6 @@ jobs:
           echo "🎛️ Controller instance created successfully"
           echo "Instance details: ${{ steps.create_controller.outputs.output }}"
 
-
-
   create-worker2:
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -386,15 +384,15 @@ jobs:
           # Parse JSON output to extract IDs (same pattern as working deploy-k0s.yml)
           WORKER_OUTPUT='${{ steps.create_worker1.outputs.output }}'
           VOLUME_OUTPUT='${{ steps.create_volume.outputs.output }}'
-          
+
           # Clean and parse JSON (remove outer quotes and unescape)
           WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
           VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          
+
           # Extract IDs using jq
           WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
           VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
-          
+
           echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
           echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
           echo "Parsed worker ID: $WORKER_ID"
@@ -447,8 +445,6 @@ jobs:
           echo "🌐 Networking setup completed"
           echo "✅ SSH configured"
           echo "✅ Tailscale connected"
-
-
 
   # ============================================================================
   # PHASE 4: WAIT FOR NODES (Sequential - needs all infrastructure)
@@ -805,7 +801,7 @@ jobs:
               name: prometheus-pv
             spec:
               capacity:
-                storage: 8Gi
+                storage: 20Gi
               accessModes:
                 - ReadWriteOnce
               persistentVolumeReclaimPolicy: Retain
@@ -830,7 +826,7 @@ jobs:
               name: grafana-pv
             spec:
               capacity:
-                storage: 2Gi
+                storage: 8Gi
               accessModes:
                 - ReadWriteOnce
               persistentVolumeReclaimPolicy: Retain
@@ -978,17 +974,41 @@ jobs:
         run: |
           echo "🧪 Testing web service internally..."
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
-            # Create a test pod and curl the service
-            sudo /usr/local/bin/k0s kubectl run test-curl \
-              --image=curlimages/curl \
-              --rm -it \
-              --restart=Never \
-              -n webserver \
-              -- curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" http://webserver-service
-
-            # Show service endpoints
-            echo -e "\nService endpoints:"
+            # Check service endpoints first
+            echo "Service endpoints:"
             sudo /usr/local/bin/k0s kubectl get endpoints -n webserver
+            echo ""
+            
+            # Test connectivity using a job instead of interactive pod
+            echo "Testing web service connectivity..."
+            sudo /usr/local/bin/k0s kubectl apply -f - <<TESTJOB
+            apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: test-connectivity
+              namespace: webserver
+            spec:
+              ttlSecondsAfterFinished: 300
+              template:
+                spec:
+                  restartPolicy: Never
+                  containers:
+                  - name: curl-test
+                    image: docker.io/curlimages/curl:latest
+                    command: ["curl"]
+                    args: ["-s", "-o", "/dev/null", "-w", "HTTP Status: %{http_code}\n", "http://webserver-service"]
+            TESTJOB
+            
+            # Wait for job completion
+            echo "Waiting for connectivity test to complete..."
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=complete --timeout=60s job/test-connectivity -n webserver
+            
+            # Get the results
+            echo "Test results:"
+            sudo /usr/local/bin/k0s kubectl logs job/test-connectivity -n webserver
+            
+            # Clean up
+            sudo /usr/local/bin/k0s kubectl delete job test-connectivity -n webserver
           EOF
 
       - name: Display deployment summary
