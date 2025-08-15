@@ -1,4 +1,4 @@
-name: Deploy K0s Kubernetes Cluster (Fully Optimized)
+name: Deploy K0s Kubernetes Cluster (Paralellized)
 
 on:
   workflow_dispatch:
