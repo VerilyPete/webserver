@@ -242,41 +242,7 @@ jobs:
           echo "🎛️ Controller instance created successfully"
           echo "Instance details: ${{ steps.create_controller.outputs.output }}"
 
-  create-worker1:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    needs: cleanup
-    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
-    outputs:
-      worker1_output: ${{ steps.create_worker1.outputs.output }}
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Create K8s Worker-1 Instance
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: create_worker1
-        with:
-          command: >-
-            compute instance launch
-            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --shape "VM.Standard.A1.Flex"
-            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
-            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
-            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
-            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
-            --display-name "k8s-worker-1"
-            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-1\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
-            --wait-for-state RUNNING
-            --max-wait-seconds 600
-          silent: false
-
-      - name: Worker-1 creation summary
-        run: |
-          echo "👷 Worker-1 instance created successfully"
-          echo "Instance details: ${{ steps.create_worker1.outputs.output }}"
 
   create-worker2:
     runs-on: ubuntu-latest
@@ -314,32 +280,7 @@ jobs:
           echo "👷 Worker-2 instance created successfully"
           echo "Instance details: ${{ steps.create_worker2.outputs.output }}"
 
-  create-storage:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    needs: cleanup
-    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
-    outputs:
-      volume_output: ${{ steps.create_volume.outputs.output }}
 
-    steps:
-      - name: Create block volume for worker-1
-        uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: create_volume
-        with:
-          command: >-
-            bv volume create
-            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
-            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
-            --display-name "k8s-worker-1-data"
-            --size-in-gbs 50
-            --wait-for-state AVAILABLE
-          silent: false
-
-      - name: Storage creation summary
-        run: |
-          echo "💾 Block volume created successfully"
-          echo "Volume details: ${{ steps.create_volume.outputs.output }}"
 
   # ============================================================================
   # PHASE 3: INFRASTRUCTURE SETUP (Parallel where possible)
@@ -347,8 +288,8 @@ jobs:
   setup-networking:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [create-controller, create-worker1, create-worker2]
-    if: always() && needs.create-controller.result == 'success' && needs.create-worker1.result == 'success' && needs.create-worker2.result == 'success'
+    needs: [create-controller, create-worker1-with-storage, create-worker2]
+    if: always() && needs.create-controller.result == 'success' && needs.create-worker1-with-storage.result == 'success' && needs.create-worker2.result == 'success'
 
     steps:
       - name: Setup SSH
@@ -371,25 +312,57 @@ jobs:
           echo "✅ SSH configured"
           echo "✅ Tailscale connected"
 
-  attach-storage:
+  create-worker1-with-storage:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    needs: [create-worker1, create-storage]
-    if: always() && needs.create-worker1.result == 'success' && needs.create-storage.result == 'success'
+    timeout-minutes: 15
+    needs: cleanup
+    if: always() && (needs.cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type != 'fresh_deploy')
+    outputs:
+      worker1_output: ${{ steps.create_worker1.outputs.output }}
+      volume_output: ${{ steps.create_volume.outputs.output }}
 
     steps:
-      - name: Debug job outputs
-        run: |
-          echo "💾 Debugging storage attachment..."
-          echo "Worker output: '${{ needs.create-worker1.outputs.worker1_output }}'"
-          echo "Volume output: '${{ needs.create-storage.outputs.volume_output }}'"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Parse worker and volume IDs
-        id: parse_ids
+      - name: Create block volume for worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_volume
+        with:
+          command: >-
+            bv volume create
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --display-name "k8s-worker-1-data"
+            --size-in-gbs 50
+            --wait-for-state AVAILABLE
+          silent: false
+
+      - name: Create K8s Worker-1 Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_worker1
+        with:
+          command: >-
+            compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
+            --display-name "k8s-worker-1"
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-1\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
+          silent: false
+
+      - name: Parse worker-1 and volume IDs for attachment
+        id: parse_attachment_ids
         run: |
-          # Parse JSON output to extract IDs
-          WORKER_OUTPUT='${{ needs.create-worker1.outputs.worker1_output }}'
-          VOLUME_OUTPUT='${{ needs.create-storage.outputs.volume_output }}'
+          # Parse JSON output to extract IDs (same pattern as working deploy-k0s.yml)
+          WORKER_OUTPUT='${{ steps.create_worker1.outputs.output }}'
+          VOLUME_OUTPUT='${{ steps.create_volume.outputs.output }}'
           
           # Clean and parse JSON (remove outer quotes and unescape)
           WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
@@ -399,42 +372,28 @@ jobs:
           WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
           VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
           
-          echo "Parsed Worker ID: $WORKER_ID"
-          echo "Parsed Volume ID: $VOLUME_ID"
-          
-          # Validate IDs are not empty
-          if [ -z "$WORKER_ID" ] || [ "$WORKER_ID" = "null" ]; then
-            echo "❌ ERROR: Worker ID is empty or null"
-            echo "Worker output was: $WORKER_OUTPUT"
-            exit 1
-          fi
-          
-          if [ -z "$VOLUME_ID" ] || [ "$VOLUME_ID" = "null" ]; then
-            echo "❌ ERROR: Volume ID is empty or null"
-            echo "Volume output was: $VOLUME_OUTPUT"
-            exit 1
-          fi
-          
-          # Set outputs for next step
           echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
           echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
+          echo "Parsed worker ID: $WORKER_ID"
+          echo "Parsed volume ID: $VOLUME_ID"
 
-      - name: Attach storage to worker-1
+      - name: Attach block volume to worker-1
         uses: oracle-actions/run-oci-cli-command@v1.3.2
         with:
           command: >-
             compute volume-attachment attach
-            --instance-id "${{ steps.parse_ids.outputs.worker_id }}"
+            --instance-id "${{ steps.parse_attachment_ids.outputs.worker_id }}"
             --type paravirtualized
-            --volume-id "${{ steps.parse_ids.outputs.volume_id }}"
+            --volume-id "${{ steps.parse_attachment_ids.outputs.volume_id }}"
             --wait-for-state ATTACHED
           silent: false
 
-      - name: Confirm storage attachment
+      - name: Confirm worker-1 and volume creation
         run: |
-          echo "✅ Storage attached to worker-1"
-          echo "Worker ID: ${{ steps.parse_ids.outputs.worker_id }}"
-          echo "Volume ID: ${{ steps.parse_ids.outputs.volume_id }}"
+          echo "👷 Worker-1 instance created successfully"
+          echo "💾 Block volume created and attached successfully"
+          echo "Worker ID: ${{ steps.parse_attachment_ids.outputs.worker_id }}"
+          echo "Volume ID: ${{ steps.parse_attachment_ids.outputs.volume_id }}"
 
   # ============================================================================
   # PHASE 4: WAIT FOR NODES (Sequential - needs all infrastructure)
