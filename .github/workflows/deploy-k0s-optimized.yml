@@ -332,32 +332,38 @@ jobs:
 
     steps:
       - name: Parse and attach storage to worker-1
-        run: |
-          echo "💾 Attaching storage to worker-1..."
-          
-          # Parse JSON output to extract IDs
-          WORKER_OUTPUT='${{ needs.create-worker1.outputs.worker1_output }}'
-          VOLUME_OUTPUT='${{ needs.create-storage.outputs.volume_output }}'
-          
-          # Clean and parse JSON (remove outer quotes and unescape)
-          WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          
-          # Extract IDs using jq
-          WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
-          VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
-          
-          echo "Worker ID: $WORKER_ID"
-          echo "Volume ID: $VOLUME_ID"
-          
-          # Attach volume
-          oci compute volume-attachment attach \
-            --instance-id "$WORKER_ID" \
-            --type paravirtualized \
-            --volume-id "$VOLUME_ID" \
-            --wait-for-state ATTACHED
-          
-          echo "✅ Storage attached to worker-1"
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: |
+            echo "💾 Attaching storage to worker-1..."
+            
+            # Parse JSON output to extract IDs
+            WORKER_OUTPUT='${{ needs.create-worker1.outputs.worker1_output }}'
+            VOLUME_OUTPUT='${{ needs.create-storage.outputs.volume_output }}'
+            
+            echo "Debug - Worker output: $WORKER_OUTPUT"
+            echo "Debug - Volume output: $VOLUME_OUTPUT"
+            
+            # Clean and parse JSON (remove outer quotes and unescape)
+            WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+            VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+            
+            # Extract IDs using jq
+            WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
+            VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
+            
+            echo "Worker ID: $WORKER_ID"
+            echo "Volume ID: $VOLUME_ID"
+            
+            # Attach volume using OCI CLI
+            oci compute volume-attachment attach \
+              --instance-id "$WORKER_ID" \
+              --type paravirtualized \
+              --volume-id "$VOLUME_ID" \
+              --wait-for-state ATTACHED
+            
+            echo "✅ Storage attached to worker-1"
+          silent: false
 
   # ============================================================================
   # PHASE 4: WAIT FOR NODES (Sequential - needs all infrastructure)
@@ -369,6 +375,19 @@ jobs:
     if: always() && needs.setup-networking.result == 'success'
 
     steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+          tags: tag:private-deploy
+
       - name: Wait for all nodes to be accessible
         run: |
           echo "⏳ Waiting for all nodes to be accessible via Tailscale..."

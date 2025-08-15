@@ -195,7 +195,7 @@ jobs:
             --display-name "k8s-worker-1-data"
             --lifecycle-state AVAILABLE
             --raw-output
-          query: 'data[0].id'
+          query: "data[0].id"
           silent: false
         continue-on-error: true
 
@@ -224,11 +224,11 @@ jobs:
         run: |
           echo "Found volume attachments, detaching..."
           ATTACHMENTS='${{ steps.find_volume_attachments.outputs.output }}'
-          
+
           # Parse JSON and extract attachment IDs
           ATTACHMENT_JSON=$(echo "$ATTACHMENTS" | sed 's/^"//; s/"$//; s/\\"/"/g')
           ATTACHMENT_IDS=$(echo "$ATTACHMENT_JSON" | jq -r '.data[]?.id // empty')
-          
+
           if [ -n "$ATTACHMENT_IDS" ]; then
             echo "Detaching volume attachments..."
             echo "$ATTACHMENT_IDS" | while read -r attachment_id; do
@@ -310,15 +310,15 @@ jobs:
           # Parse JSON output to extract IDs
           WORKER_OUTPUT='${{ steps.create_worker1.outputs.output }}'
           VOLUME_OUTPUT='${{ steps.create_volume.outputs.output }}'
-          
+
           # Clean and parse JSON (remove outer quotes and unescape)
           WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
           VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
-          
+
           # Extract IDs using jq
           WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
           VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
-          
+
           echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
           echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
           echo "Parsed worker ID: $WORKER_ID"
@@ -376,7 +376,7 @@ jobs:
         timeout-minutes: 15
         run: |
           echo "Waiting for all nodes to be accessible via Tailscale..."
-          
+
           echo "Current Tailscale status:"
           tailscale status
           echo ""
@@ -448,19 +448,19 @@ jobs:
       - name: Refresh Tailscale connection and DNS
         run: |
           echo "Refreshing Tailscale connection now that all nodes are online..."
-          
+
           # Show current Tailscale status
           echo "Current Tailscale peers:"
           tailscale status
           echo ""
-          
+
           # Force refresh of Tailscale DNS and peer list
           echo "Refreshing DNS cache..."
           tailscale status --json | jq '.Self.HostName' || echo "No hostname in status"
-          
+
           # Wait a moment for DNS to propagate
           sleep 10
-          
+
           echo "Testing DNS resolution for k8s nodes..."
           for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
             echo "Resolving $hostname..."
@@ -614,53 +614,53 @@ jobs:
             
             # Create prometheus PV
             cat > /tmp/prometheus-pv.yaml << 'PVEND'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: prometheus-pv
-spec:
-  capacity:
-    storage: 8Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /mnt/data/k8s-pv-prometheus
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - k8s-worker-1
-PVEND
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: prometheus-pv-1
+            spec:
+              capacity:
+                storage: 10Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-prometheus-1
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+          PVEND
             
             # Create grafana PV
             cat > /tmp/grafana-pv.yaml << 'PVEND'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: grafana-pv
-spec:
-  capacity:
-    storage: 2Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /mnt/data/k8s-pv-grafana
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - k8s-worker-1
-PVEND
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: grafana-pv-1
+            spec:
+              capacity:
+                storage: 2Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-grafana-1
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+          PVEND
             
             # Apply the PVs
             sudo /usr/local/bin/k0s kubectl apply -f /tmp/prometheus-pv.yaml
