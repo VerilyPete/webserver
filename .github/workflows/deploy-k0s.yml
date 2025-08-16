@@ -686,7 +686,7 @@ jobs:
             cd /tmp/manifests
 
             # Update Cloudflare secret with actual values
-            cat > 02-cloudflare-secret.yaml << SECRET
+            cat > 02-cloudflare-secret.yaml << 'SECRETEND'
             apiVersion: v1
             kind: Secret
             metadata:
@@ -696,7 +696,7 @@ jobs:
             stringData:
               CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_STAGING_API_TOKEN }}"
               CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
-            SECRET
+          SECRETEND
 
             # Apply manifests in order
             echo "Creating namespaces..."
