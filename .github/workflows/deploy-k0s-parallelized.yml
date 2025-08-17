@@ -923,6 +923,15 @@ jobs:
             echo "Waiting for controller to be ready..."
             sudo /usr/local/bin/k0s kubectl wait --for=condition=available --timeout=300s \
               deployment/cloudflare-tunnel-controller -n cloudflare-tunnel || true
+            
+            echo "Controller deployment status:"
+            sudo /usr/local/bin/k0s kubectl get deployment -n cloudflare-tunnel -o wide
+            echo "Controller pods:"
+            sudo /usr/local/bin/k0s kubectl get pods -n cloudflare-tunnel -o wide
+            echo "Controller events:"
+            sudo /usr/local/bin/k0s kubectl get events -n cloudflare-tunnel --sort-by='.lastTimestamp'
+            echo "Controller logs (if pod exists):"
+            sudo /usr/local/bin/k0s kubectl logs -n cloudflare-tunnel -l app=cloudflare-tunnel-controller --tail=50 || echo "No logs available yet"
 
             echo "Deploying web application..."
             sudo /usr/local/bin/k0s kubectl apply -f 04-webserver/
