@@ -30,7 +30,7 @@ spec:
                   name: cloudflare-credentials
                   key: CLOUDFLARE_ACCOUNT_ID
             - name: CLOUDFLARE_TUNNEL_NAME
-              value: "k8s-staging-tunnel"
+              value: "webserver-staging"
             - name: NAMESPACE
               valueFrom:
                 fieldRef:

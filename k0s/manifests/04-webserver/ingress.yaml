@@ -4,7 +4,7 @@ metadata:
   name: webserver-ingress
   namespace: webserver
   annotations:
-    cloudflare-tunnel.ingress.kubernetes.io/tunnel-name: k8s-staging-tunnel
+    cloudflare-tunnel.ingress.kubernetes.io/tunnel-name: webserver-staging
 spec:
   ingressClassName: cloudflare-tunnel
   rules:
