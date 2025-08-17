@@ -214,9 +214,12 @@ runcmd:
       
       # Allow specific K0s ports
       sudo firewall-cmd --permanent --add-port=6443/tcp  # K0s API server
+      sudo firewall-cmd --permanent --add-port=9443/tcp  # K0s controller join API
       sudo firewall-cmd --permanent --add-port=10250/tcp # Kubelet API
       sudo firewall-cmd --permanent --add-port=2379-2380/tcp # etcd
-      sudo firewall-cmd --permanent --add-port=8472/udp  # flannel/vxlan
+      sudo firewall-cmd --permanent --add-port=8132/tcp  # Konnectivity agent connections
+      sudo firewall-cmd --permanent --add-port=8133/tcp  # Konnectivity admin port
+      sudo firewall-cmd --permanent --add-port=179/tcp   # Kube-router BGP
       
       # Allow SSH for management
       sudo firewall-cmd --permanent --add-service=ssh

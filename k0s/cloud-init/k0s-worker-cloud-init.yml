@@ -188,8 +188,9 @@ runcmd:
       
       # Allow specific K0s ports
       sudo firewall-cmd --permanent --add-port=10250/tcp # Kubelet API
+      sudo firewall-cmd --permanent --add-port=8132/tcp  # Konnectivity agent
+      sudo firewall-cmd --permanent --add-port=179/tcp   # Kube-router BGP
       sudo firewall-cmd --permanent --add-port=30000-32767/tcp # NodePort services
-      sudo firewall-cmd --permanent --add-port=8472/udp  # flannel/vxlan
       
       # Allow SSH for management
       sudo firewall-cmd --permanent --add-service=ssh

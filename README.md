@@ -113,6 +113,7 @@ Before deploying this infrastructure, ensure you have:
 - Custom OCI image with Podman pre-installed
 - SSH key pair for secure access
 - GitHub repository with secrets management
+- Firewall configuration for k0s ports (6443, 9443, 8132, 8133, 10250, 179, 2379-2380, 30000-32767)
 
 ## 🚀 Quick Start
 
@@ -542,7 +543,55 @@ ssh opc@[hostname] 'systemctl --user status webserver-pod.service'
 ssh opc@[hostname] 'podman ps --format "table {{.Names}}\t{{.Status}}\t{{.RestartCount}}"'
 ```
 
-#### Cloud-init Errors
+#### K0s Firewall Port Requirements
+
+The k0s cluster requires specific firewall ports to be open for proper operation:
+
+#### Controller Node Ports
+```bash
+# Essential k0s ports
+6443/tcp   # Kubernetes API server
+9443/tcp   # k0s controller join API  
+8132/tcp   # Konnectivity server
+8133/tcp   # Konnectivity admin port
+10250/tcp  # Kubelet API
+2379/tcp   # etcd client API
+2380/tcp   # etcd peer communication
+179/tcp    # Kube-router BGP
+
+# Service ports  
+30000-32767/tcp # NodePort services (if used)
+```
+
+#### Worker Node Ports
+```bash
+# Essential worker ports
+10250/tcp  # Kubelet API
+8132/tcp   # Konnectivity agent
+179/tcp    # Kube-router BGP
+30000-32767/tcp # NodePort services
+```
+
+### Konnectivity Issues (k0s deployments)
+
+**Symptoms**: kubectl exec fails, pods can't communicate with API server
+
+**Solutions**:
+```bash
+# Check konnectivity-agent pods status
+ssh opc@k8s-controller 'sudo /usr/local/bin/k0s kubectl get pods -n kube-system | grep konnectivity'
+
+# Check if konnectivity port is blocked by firewall
+ssh opc@k8s-controller 'sudo firewall-cmd --list-ports | grep 8132'
+
+# Add konnectivity port if missing
+ssh opc@k8s-controller 'sudo firewall-cmd --permanent --add-port=8132/tcp && sudo firewall-cmd --reload'
+
+# Verify konnectivity-agents become ready (should show 1/1)
+ssh opc@k8s-controller 'sudo /usr/local/bin/k0s kubectl get pods -n kube-system -l app=konnectivity-agent'
+```
+
+### Cloud-init Errors
 
 **Symptoms**: Instance creation fails, bootstrap incomplete
 
