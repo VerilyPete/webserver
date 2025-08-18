@@ -887,51 +887,45 @@ jobs:
           # Copy manifests to controller
           scp -r -o StrictHostKeyChecking=no ./k0s/manifests opc@k8s-controller:/tmp/
 
-          # Deploy on controller
+          # Deploy on controller using Helm for Cloudflare controller
           ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
             cd /tmp/manifests
 
-            # Update Cloudflare secret with actual values
-            cat > 02-cloudflare-secret.yaml << 'SECRETEND'
-            apiVersion: v1
-            kind: Secret
-            metadata:
-              name: cloudflare-credentials
-              namespace: cloudflare-tunnel
-            type: Opaque
-            stringData:
-              CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_K0S_TOKEN }}"
-              CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
-          SECRETEND
+            # Install Helm if not already installed
+            if ! command -v helm &> /dev/null; then
+              echo "Installing Helm..."
+              curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+              chmod 700 get_helm.sh
+              ./get_helm.sh
+              rm get_helm.sh
+            fi
 
-            # Apply manifests in order
+            # Apply basic namespaces first
             echo "Creating namespaces..."
             sudo /usr/local/bin/k0s kubectl apply -f 01-namespace.yaml
 
-            echo "Creating Cloudflare secret..."
-            sudo /usr/local/bin/k0s kubectl apply -f 02-cloudflare-secret.yaml
+            # Deploy Cloudflare Tunnel Ingress Controller using Helm
+            echo "Adding Helm repository for Cloudflare controller..."
+            helm repo add strrl https://helm.strrl.dev/ || true
+            helm repo update
 
-            echo "Installing Cloudflare controller CRDs..."
-            sudo /usr/local/bin/k0s kubectl apply -f 03-cloudflare-controller/01-crds.yaml
+            echo "Deploying Cloudflare tunnel controller via Helm..."
+            helm upgrade --install --wait \
+              -n cloudflare-tunnel --create-namespace \
+              cloudflare-tunnel-ingress-controller \
+              strrl/cloudflare-tunnel-ingress-controller \
+              --set=cloudflare.apiToken="${{ secrets.CLOUDFLARE_K0S_TOKEN }}" \
+              --set=cloudflare.accountId="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
+              --set=cloudflare.tunnelName="webserver-staging" \
+              --timeout=300s
 
-            echo "Setting up RBAC..."
-            sudo /usr/local/bin/k0s kubectl apply -f 03-cloudflare-controller/02-rbac.yaml
-
-            echo "Deploying Cloudflare controller..."
-            sudo /usr/local/bin/k0s kubectl apply -f 03-cloudflare-controller/03-deployment.yaml
-
-            echo "Waiting for controller to be ready..."
-            sudo /usr/local/bin/k0s kubectl wait --for=condition=available --timeout=300s \
-              deployment/cloudflare-tunnel-controller -n cloudflare-tunnel || true
-            
-            echo "Controller deployment status:"
-            sudo /usr/local/bin/k0s kubectl get deployment -n cloudflare-tunnel -o wide
-            echo "Controller pods:"
+            echo "Verifying Cloudflare controller deployment..."
             sudo /usr/local/bin/k0s kubectl get pods -n cloudflare-tunnel -o wide
-            echo "Controller events:"
-            sudo /usr/local/bin/k0s kubectl get events -n cloudflare-tunnel --sort-by='.lastTimestamp'
-            echo "Controller logs (if pod exists):"
-            sudo /usr/local/bin/k0s kubectl logs -n cloudflare-tunnel -l app=cloudflare-tunnel-controller --tail=50 || echo "No logs available yet"
+            sudo /usr/local/bin/k0s kubectl get ingressclass
+            
+            # Check controller logs
+            echo "Controller logs:"
+            sudo /usr/local/bin/k0s kubectl logs -n cloudflare-tunnel -l app.kubernetes.io/name=cloudflare-tunnel-ingress-controller --tail=50 || echo "No logs available yet"
 
             echo "Deploying web application..."
             sudo /usr/local/bin/k0s kubectl apply -f 04-webserver/

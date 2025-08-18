@@ -194,8 +194,10 @@ CLOUDFLARE_PROD_TUNNEL_TOKEN    # Production tunnel token
 CLOUDFLARE_STAGING_TUNNEL_TOKEN # Staging tunnel token
 CLOUDFLARE_PROD_API_TOKEN       # Production API token for cache purging
 CLOUDFLARE_PROD_ZONE_ID         # Production zone ID for cache purging
-CLOUDFLARE_K0S_TOKEN    # Staging API token for cache purging
+CLOUDFLARE_STAGING_API_TOKEN    # Staging API token for cache purging
 CLOUDFLARE_STAGING_ZONE_ID      # Staging zone ID for cache purging
+CLOUDFLARE_K0S_TOKEN            # K0s cluster Cloudflare API token with tunnel permissions
+CLOUDFLARE_ACCOUNT_ID           # Cloudflare account ID for tunnel management
 ```
 
 #### Application
@@ -772,11 +774,18 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
   - `deploy_type`: `fresh_deploy`, `update`, or `web_only_update`
   - `hostname`: `webserver-staging` or `webserver-prod`
 - **Purpose**: Deploy complete pod-based monitoring infrastructure
+
+#### Deploy K0s Kubernetes Cluster (`deploy-k0s-parallelized.yml`)
+- **Trigger**: Manual dispatch only
+- **Parameters**:
+  - `deploy_type`: `fresh_deploy`, `update_app`, or `update_cluster`
+- **Purpose**: Deploy complete k0s Kubernetes cluster with Cloudflare tunnel ingress
 - **Features**:
-  - Automated network creation (monitoring-net)
-  - Pod architecture deployment (webserver-pod, monitoring-pod)
-  - Comprehensive health verification
-  - Prometheus + Grafana monitoring setup
+  - **k0s cluster deployment** (1 controller + 2 workers with auto-scaling)
+  - **Cloudflare tunnel ingress controller** deployed via Helm
+  - **Automated firewall configuration** for k0s ports (6443, 9443, 8132, 8133, 10250, 179, 2379-2380)
+  - **Persistent storage setup** with block volumes
+  - **Comprehensive health verification** and cluster setup
   - **Automatic Cloudflare cache purging** after successful deployment
     - Production deployments use `CLOUDFLARE_PROD_API_TOKEN` and `CLOUDFLARE_PROD_ZONE_ID`
     - Staging deployments use `CLOUDFLARE_K0S_TOKEN` and `CLOUDFLARE_STAGING_ZONE_ID`
