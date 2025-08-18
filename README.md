@@ -194,7 +194,7 @@ CLOUDFLARE_PROD_TUNNEL_TOKEN    # Production tunnel token
 CLOUDFLARE_STAGING_TUNNEL_TOKEN # Staging tunnel token
 CLOUDFLARE_PROD_API_TOKEN       # Production API token for cache purging
 CLOUDFLARE_PROD_ZONE_ID         # Production zone ID for cache purging
-CLOUDFLARE_STAGING_API_TOKEN    # Staging API token for cache purging
+CLOUDFLARE_K0S_TOKEN    # Staging API token for cache purging
 CLOUDFLARE_STAGING_ZONE_ID      # Staging zone ID for cache purging
 ```
 
@@ -779,7 +779,7 @@ podman pod create --name monitoring-pod --network monitoring-net -p 9090:9090 -p
   - Prometheus + Grafana monitoring setup
   - **Automatic Cloudflare cache purging** after successful deployment
     - Production deployments use `CLOUDFLARE_PROD_API_TOKEN` and `CLOUDFLARE_PROD_ZONE_ID`
-    - Staging deployments use `CLOUDFLARE_STAGING_API_TOKEN` and `CLOUDFLARE_STAGING_ZONE_ID`
+    - Staging deployments use `CLOUDFLARE_K0S_TOKEN` and `CLOUDFLARE_STAGING_ZONE_ID`
     - Purges entire cache using Cloudflare API v4
     - Deployment fails if cache purge fails
 - **Deployment Types**:

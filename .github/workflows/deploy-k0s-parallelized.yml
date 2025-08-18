@@ -900,7 +900,7 @@ jobs:
               namespace: cloudflare-tunnel
             type: Opaque
             stringData:
-              CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_STAGING_API_TOKEN }}"
+              CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_K0S_TOKEN }}"
               CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
           SECRETEND
 
@@ -1119,7 +1119,7 @@ jobs:
 
           response=$(curl -s -X POST \
             "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_STAGING_ZONE_ID }}/purge_cache" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_STAGING_API_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_K0S_TOKEN }}" \
             -H "Content-Type: application/json" \
             --data '{"purge_everything":true}')
 
