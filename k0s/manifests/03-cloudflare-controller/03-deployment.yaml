@@ -16,20 +16,20 @@ spec:
       serviceAccountName: cloudflare-tunnel-controller
       containers:
         - name: controller
-          image: ghcr.io/strrl/cloudflare-tunnel-ingress-controller:latest
+          image: ghcr.io/strrl/cloudflare-tunnel-ingress-controller:v0.1.0
           imagePullPolicy: Always
           env:
-            - name: CLOUDFLARE_API_TOKEN
+            - name: API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: cloudflare-credentials
                   key: CLOUDFLARE_API_TOKEN
-            - name: CLOUDFLARE_ACCOUNT_ID
+            - name: ACCOUNT_ID
               valueFrom:
                 secretKeyRef:
                   name: cloudflare-credentials
                   key: CLOUDFLARE_ACCOUNT_ID
-            - name: CLOUDFLARE_TUNNEL_NAME
+            - name: TUNNEL_NAME
               value: "webserver-staging"
             - name: NAMESPACE
               valueFrom:
