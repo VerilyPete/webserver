@@ -218,28 +218,20 @@ runcmd:
       # Allow service network traffic (Kubernetes services)
       sudo firewall-cmd --permanent --add-source=10.96.0.0/12
       
-      # Create systemd service to apply iptables bypass rule after k0s starts
-      cat > /etc/systemd/system/k0s-iptables-fix.service << 'EOSVC'
-[Unit]
-Description=Apply iptables bypass rule for k0s pod network
-After=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/bash -c 'for i in {1..30}; do if systemctl is-active k0scontroller >/dev/null 2>&1; then sleep 30; iptables -I FORWARD 1 -s 10.244.0.0/16 -d 10.244.0.0/16 -j ACCEPT; iptables-save > /etc/iptables/rules.v4; exit 0; fi; sleep 10; done; exit 1'
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOSVC
+      # Allow ICMP (ping) traffic for pod network
+      sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.244.0.0/16" protocol value="icmp" accept'
       
-      # Enable the service to run on boot
-      sudo systemctl enable k0s-iptables-fix.service
+      # Allow all pod network traffic (bypass kube-router restrictions)
+      sudo iptables -I FORWARD 1 -s 10.244.0.0/16 -d 10.244.0.0/16 -j ACCEPT
       
-      # Create iptables directory for rule persistence
-      sudo mkdir -p /etc/iptables
+      # Make iptables rules persistent 
+      sudo iptables-save > /etc/iptables/rules.v4 || sudo mkdir -p /etc/iptables && sudo iptables-save > /etc/iptables/rules.v4
+      
+      # Ensure iptables rules are restored on boot
+      echo '#!/bin/bash' > /etc/rc.local
+      echo 'iptables-restore < /etc/iptables/rules.v4' >> /etc/rc.local
+      echo 'exit 0' >> /etc/rc.local
+      chmod +x /etc/rc.local
       
       # Allow specific K0s ports
       sudo firewall-cmd --permanent --add-port=6443/tcp  # K0s API server
