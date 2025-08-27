@@ -126,7 +126,6 @@ jobs:
             network vnic update
             --vnic-id "${{ steps.get_controller_vnic.outputs.output }}"
             --skip-source-dest-check true
-            --debug
           silent: false
 
       - name: Controller creation summary
@@ -199,7 +198,6 @@ jobs:
             network vnic update
             --vnic-id "${{ steps.get_worker2_vnic.outputs.output }}"
             --skip-source-dest-check true
-            --debug
           silent: false
 
       - name: Worker-2 creation summary
@@ -307,7 +305,6 @@ jobs:
             network vnic update
             --vnic-id "${{ steps.get_worker1_vnic.outputs.output }}"
             --skip-source-dest-check true
-            --debug
           silent: false
 
       - name: Confirm worker-1 and volume creation

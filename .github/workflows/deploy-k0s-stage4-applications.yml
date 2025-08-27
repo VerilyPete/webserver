@@ -88,6 +88,7 @@ jobs:
               --set=cloudflare.accountId="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
               --set=cloudflare.tunnelName="webserver-staging" \
               --set=nodeSelector."kubernetes\.io/hostname"="k8s-worker-1" \
+              --set=connector.initDelaySeconds=180 \
               --timeout=300s
 
             echo "Verifying Cloudflare controller deployment..."
@@ -105,7 +106,22 @@ jobs:
             sudo /usr/local/bin/k0s kubectl wait --for=condition=available --timeout=300s \
               deployment/webserver -n webserver
 
-            echo "✅ All manifests deployed"
+            echo "Waiting for service endpoints to stabilize..."
+            sleep 30
+            
+            # Test service connectivity before Cloudflare tries to use it
+            echo "Testing service readiness from within cluster..."
+            for i in {1..5}; do
+              if sudo /usr/local/bin/k0s kubectl run connectivity-test-$i --image=curlimages/curl --restart=Never --rm --timeout=30s -- curl -s --max-time 5 http://webserver-service.webserver.svc.cluster.local >/dev/null 2>&1; then
+                echo "✅ Service connectivity confirmed (attempt $i)"
+                break
+              else
+                echo "⏳ Service not ready yet (attempt $i/5), waiting 30s..."
+                sleep 30
+              fi
+            done
+
+            echo "✅ All manifests deployed and service ready"
           EOF
 
       - name: Verify deployment
