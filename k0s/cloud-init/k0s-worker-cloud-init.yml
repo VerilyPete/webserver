@@ -196,13 +196,12 @@ runcmd:
       cat > /etc/systemd/system/k0s-iptables-fix.service << 'EOSVC'
 [Unit]
 Description=Apply iptables bypass rule for k0s pod network
-After=k0sworker.service
-Requires=k0sworker.service
+After=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'sleep 30 && iptables -I FORWARD 1 -s 10.244.0.0/16 -d 10.244.0.0/16 -j ACCEPT && iptables-save > /etc/iptables/rules.v4'
+ExecStart=/bin/bash -c 'for i in {1..30}; do if systemctl is-active k0sworker >/dev/null 2>&1; then sleep 30; iptables -I FORWARD 1 -s 10.244.0.0/16 -d 10.244.0.0/16 -j ACCEPT; iptables-save > /etc/iptables/rules.v4; exit 0; fi; sleep 10; done; exit 1'
 StandardOutput=journal
 StandardError=journal
 
