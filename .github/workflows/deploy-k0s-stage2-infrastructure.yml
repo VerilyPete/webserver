@@ -103,7 +103,7 @@ jobs:
 
       - name: Get controller VNIC ID
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: get_controller_vnic
+        id: get_controller_vnic_raw
         with:
           command: >-
             compute instance list-vnics
@@ -111,6 +111,13 @@ jobs:
             --query "data[0].id"
             --raw-output
           silent: false
+
+      - name: Clean controller VNIC ID
+        id: get_controller_vnic
+        run: |
+          VNIC_ID=$(echo "${{ steps.get_controller_vnic_raw.outputs.output }}" | tr -d '\n\r' | xargs)
+          echo "output=$VNIC_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned VNIC ID: $VNIC_ID"
 
       - name: Disable source/destination check on controller VNIC
         uses: oracle-actions/run-oci-cli-command@v1.3.2
@@ -169,7 +176,7 @@ jobs:
 
       - name: Get worker-2 VNIC ID
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: get_worker2_vnic
+        id: get_worker2_vnic_raw
         with:
           command: >-
             compute instance list-vnics
@@ -177,6 +184,13 @@ jobs:
             --query "data[0].id"
             --raw-output
           silent: false
+
+      - name: Clean worker-2 VNIC ID
+        id: get_worker2_vnic
+        run: |
+          VNIC_ID=$(echo "${{ steps.get_worker2_vnic_raw.outputs.output }}" | tr -d '\n\r' | xargs)
+          echo "output=$VNIC_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned VNIC ID: $VNIC_ID"
 
       - name: Disable source/destination check on worker-2 VNIC
         uses: oracle-actions/run-oci-cli-command@v1.3.2
@@ -270,7 +284,7 @@ jobs:
 
       - name: Get worker-1 VNIC ID
         uses: oracle-actions/run-oci-cli-command@v1.3.2
-        id: get_worker1_vnic
+        id: get_worker1_vnic_raw
         with:
           command: >-
             compute instance list-vnics
@@ -278,6 +292,13 @@ jobs:
             --query "data[0].id"
             --raw-output
           silent: false
+
+      - name: Clean worker-1 VNIC ID
+        id: get_worker1_vnic
+        run: |
+          VNIC_ID=$(echo "${{ steps.get_worker1_vnic_raw.outputs.output }}" | tr -d '\n\r' | xargs)
+          echo "output=$VNIC_ID" >> $GITHUB_OUTPUT
+          echo "Cleaned VNIC ID: $VNIC_ID"
 
       - name: Disable source/destination check on worker-1 VNIC
         uses: oracle-actions/run-oci-cli-command@v1.3.2
