@@ -119,6 +119,7 @@ jobs:
             network vnic update
             --vnic-id "${{ steps.get_controller_vnic.outputs.output }}"
             --skip-source-dest-check true
+            --debug
           silent: false
 
       - name: Controller creation summary
@@ -184,6 +185,7 @@ jobs:
             network vnic update
             --vnic-id "${{ steps.get_worker2_vnic.outputs.output }}"
             --skip-source-dest-check true
+            --debug
           silent: false
 
       - name: Worker-2 creation summary
@@ -284,6 +286,7 @@ jobs:
             network vnic update
             --vnic-id "${{ steps.get_worker1_vnic.outputs.output }}"
             --skip-source-dest-check true
+            --debug
           silent: false
 
       - name: Confirm worker-1 and volume creation
@@ -307,9 +310,10 @@ jobs:
           echo "✅ Infrastructure Creation Complete!"
           echo "========================================="
           echo ""
-          echo "🎛️  Controller: Created and running (src/dst check disabled)"
-          echo "👷 Worker-1: Created with 50GB storage (src/dst check disabled)"
-          echo "👷 Worker-2: Created and running (src/dst check disabled)"
+          echo "🎛️  Controller: Created and running"
+          echo "👷 Worker-1: Created with 50GB storage"  
+          echo "👷 Worker-2: Created and running"
+          echo "⚠️  NOTE: VNIC src/dst check requires additional IAM permissions"
           echo ""
           echo "📊 Resource Allocation:"
           echo "  Controller: 1 OCPU, 6GB RAM"
