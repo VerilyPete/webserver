@@ -40,5 +40,3 @@ runs:
         echo "🌐 Connectivity setup completed"
         echo "✅ SSH configured"
         echo "✅ Tailscale connected"
-        echo "Tailscale status:"
-        tailscale status || echo "Tailscale not yet ready"
