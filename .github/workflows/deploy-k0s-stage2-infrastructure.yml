@@ -1,0 +1,241 @@
+# ============================================================================
+# STAGE 2: INFRASTRUCTURE CREATION
+# ============================================================================
+# Purpose: Create OCI instances (controller + workers) and storage volumes
+# When to use: Fresh deploys and cluster updates
+# Dependencies: Stage 1 (cleanup) for fresh deploys
+# Outputs: Instance details, networking information
+#
+# This stage:
+# 1. Creates K8s controller instance with k0s controller cloud-init
+# 2. Creates worker instances (worker-1 with storage, worker-2 standard)
+# 3. Creates and attaches block storage to worker-1
+# 4. Runs infrastructure creation in parallel for speed
+# 5. Waits for all instances to reach RUNNING state
+# ============================================================================
+
+name: 'Deploy K0s Stage 2: Infrastructure'
+
+on:
+  workflow_call:
+    inputs:
+      cleanup_completed:
+        description: "Whether cleanup was completed (for fresh deploys)"
+        required: false
+        type: string
+        default: "true"
+      deploy_type:
+        description: "Type of deployment"
+        required: false
+        type: string
+        default: "fresh_deploy"
+    outputs:
+      controller_output:
+        description: "Controller instance details"
+        value: ${{ jobs.create-controller.outputs.controller_output }}
+      worker1_output:
+        description: "Worker-1 instance details"
+        value: ${{ jobs.create-worker1-with-storage.outputs.worker1_output }}
+      worker2_output:
+        description: "Worker-2 instance details"
+        value: ${{ jobs.create-worker2.outputs.worker2_output }}
+      volume_output:
+        description: "Storage volume details"
+        value: ${{ jobs.create-worker1-with-storage.outputs.volume_output }}
+
+  workflow_dispatch:
+    inputs:
+      deploy_type:
+        description: "Type of deployment"
+        required: true
+        default: "fresh_deploy"
+        type: choice
+        options:
+          - "fresh_deploy"
+          - "update_cluster"
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  create-controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    outputs:
+      controller_output: ${{ steps.create_controller.outputs.output }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create K0s Controller Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_controller
+        with:
+          command: >-
+            compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-controller-cloud-init.yml
+            --display-name "k8s-controller"
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-controller\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
+          silent: false
+
+      - name: Controller creation summary
+        run: |
+          echo "🎛️ Controller instance created successfully"
+          echo "Instance details: ${{ steps.create_controller.outputs.output }}"
+
+  create-worker2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    outputs:
+      worker2_output: ${{ steps.create_worker2.outputs.output }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create K8s Worker-2 Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_worker2
+        with:
+          command: >-
+            compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
+            --display-name "k8s-worker-2"
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-2\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
+          silent: false
+
+      - name: Worker-2 creation summary
+        run: |
+          echo "👷 Worker-2 instance created successfully"
+          echo "Instance details: ${{ steps.create_worker2.outputs.output }}"
+
+  create-worker1-with-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      worker1_output: ${{ steps.create_worker1.outputs.output }}
+      volume_output: ${{ steps.create_volume.outputs.output }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create block volume for worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_volume
+        with:
+          command: >-
+            bv volume create
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --display-name "k8s-worker-1-data"
+            --size-in-gbs 50
+            --wait-for-state AVAILABLE
+          silent: false
+
+      - name: Create K8s Worker-1 Instance
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: create_worker1
+        with:
+          command: >-
+            compute instance launch
+            --availability-domain "${{ secrets.OCI_AVAILABILITY_DOMAIN }}"
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --shape "VM.Standard.A1.Flex"
+            --shape-config "{\"memoryInGBs\":6,\"ocpus\":1}"
+            --image-id "${{ secrets.OCI_CUSTOM_IMAGE }}"
+            --subnet-id "${{ secrets.OCI_PRIVATE_SUBNET }}"
+            --user-data-file ./k0s/cloud-init/k0s-worker-cloud-init.yml
+            --display-name "k8s-worker-1"
+            --metadata "{\"ssh_authorized_keys\":\"${{ secrets.SSH_PUBLIC_KEY }}\",\"HOSTNAME\":\"k8s-worker-1\",\"TAILSCALE_AUTH_KEY\":\"${{ secrets.TAILSCALE_AUTH_KEY }}\"}"
+            --wait-for-state RUNNING
+            --max-wait-seconds 600
+          silent: false
+
+      - name: Parse worker-1 and volume IDs for attachment
+        id: parse_attachment_ids
+        run: |
+          # Parse JSON output to extract IDs (same pattern as working deploy-k0s.yml)
+          WORKER_OUTPUT='${{ steps.create_worker1.outputs.output }}'
+          VOLUME_OUTPUT='${{ steps.create_volume.outputs.output }}'
+
+          # Clean and parse JSON (remove outer quotes and unescape)
+          WORKER_JSON=$(echo "$WORKER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          VOLUME_JSON=$(echo "$VOLUME_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+
+          # Extract IDs using jq
+          WORKER_ID=$(echo "$WORKER_JSON" | jq -r '.data.id')
+          VOLUME_ID=$(echo "$VOLUME_JSON" | jq -r '.data.id')
+
+          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
+          echo "volume_id=$VOLUME_ID" >> $GITHUB_OUTPUT
+          echo "Parsed worker ID: $WORKER_ID"
+          echo "Parsed volume ID: $VOLUME_ID"
+
+      - name: Attach block volume to worker-1
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute volume-attachment attach
+            --instance-id "${{ steps.parse_attachment_ids.outputs.worker_id }}"
+            --type paravirtualized
+            --volume-id "${{ steps.parse_attachment_ids.outputs.volume_id }}"
+            --wait-for-state ATTACHED
+          silent: false
+
+      - name: Confirm worker-1 and volume creation
+        run: |
+          echo "👷 Worker-1 instance created successfully"
+          echo "💾 Block volume created and attached successfully"
+          echo "Worker ID: ${{ steps.parse_attachment_ids.outputs.worker_id }}"
+          echo "Volume ID: ${{ steps.parse_attachment_ids.outputs.volume_id }}"
+
+  verify-infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [create-controller, create-worker1-with-storage, create-worker2]
+    if: always() && needs.create-controller.result == 'success' && needs.create-worker1-with-storage.result == 'success' && needs.create-worker2.result == 'success'
+
+    steps:
+      - name: Infrastructure creation summary
+        run: |
+          echo "========================================="
+          echo "✅ Infrastructure Creation Complete!"
+          echo "========================================="
+          echo ""
+          echo "🎛️  Controller: Created and running"
+          echo "👷 Worker-1: Created with 50GB storage"
+          echo "👷 Worker-2: Created and running"
+          echo ""
+          echo "📊 Resource Allocation:"
+          echo "  Controller: 1 OCPU, 6GB RAM"
+          echo "  Worker-1: 1 OCPU, 6GB RAM + 50GB storage"
+          echo "  Worker-2: 1 OCPU, 6GB RAM"
+          echo "  Total: 3 OCPUs, 18GB RAM"
+          echo ""
+          echo "🔄 Next Steps:"
+          echo "  1. Wait for Tailscale connections"
+          echo "  2. Initialize K8s cluster"
+          echo "  3. Join worker nodes"
+          echo "========================================="

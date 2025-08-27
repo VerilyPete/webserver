@@ -1,0 +1,419 @@
+# ============================================================================
+# STAGE 3: CLUSTER FORMATION
+# ============================================================================
+# Purpose: Join workers to cluster, configure nodes, setup storage
+# When to use: Fresh deploys and cluster updates
+# Dependencies: Stage 2 (infrastructure)
+# Outputs: Cluster status and configuration
+#
+# This stage:
+# 1. Sets up networking (SSH keys, Tailscale connection)
+# 2. Waits for all nodes to be accessible via Tailscale
+# 3. Verifies K0s installation on all nodes
+# 4. Joins worker nodes to the K8s cluster (parallel)
+# 5. Verifies cluster formation
+# 6. Configures cluster (node labels, persistent volumes)
+# ============================================================================
+
+name: 'Deploy K0s Stage 3: Cluster Formation'
+
+on:
+  workflow_call:
+    outputs:
+      cluster_ready:
+        description: "Whether cluster formation completed successfully"
+        value: ${{ jobs.configure-cluster.outputs.cluster_ready }}
+
+  workflow_dispatch:
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  setup-networking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      networking_ready: ${{ steps.networking_status.outputs.ready }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Mark networking ready
+        id: networking_status
+        run: |
+          echo "ready=true" >> $GITHUB_OUTPUT
+          echo "✅ Networking setup completed"
+
+  wait-for-nodes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [setup-networking]
+    if: always() && needs.setup-networking.result == 'success'
+
+    steps:
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Wait for all nodes to be accessible
+        run: |
+          echo "⏳ Waiting for all nodes to be accessible via Tailscale..."
+
+          echo "Current Tailscale status:"
+          tailscale status
+          echo ""
+
+          for node in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "🔍 Checking $node..."
+            MAX_ATTEMPTS=45
+            for i in $(seq 1 $MAX_ATTEMPTS); do
+              # First check if we can reach the node at all
+              if ! ping -c 1 -W 2 $node >/dev/null 2>&1; then
+                echo "  Attempt $i/$MAX_ATTEMPTS - $node not reachable via network, waiting 10s..."
+                sleep 10
+                continue
+              fi
+              
+              # Try SSH with timeout
+              if timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@$node "echo '✅ $node is ready'" >/dev/null 2>&1; then
+                echo "✅ $node is accessible"
+                break
+              fi
+              
+              if [ $i -eq $MAX_ATTEMPTS ]; then
+                echo "❌ Failed to connect to $node after $MAX_ATTEMPTS attempts"
+                exit 1
+              fi
+              
+              # Show progress every 5 attempts
+              if [ $((i % 5)) -eq 0 ]; then
+                echo "  Attempt $i/$MAX_ATTEMPTS - SSH failed, checking port 22..."
+                timeout 3 nc -zv $node 22 2>/dev/null && echo "    Port 22 is open" || echo "    Port 22 not accessible yet"
+              fi
+              
+              echo "  Attempt $i/$MAX_ATTEMPTS - waiting 10s..."
+              sleep 10
+            done
+          done
+
+          echo "✅ All nodes are accessible"
+
+      - name: Verify K0s installation on all nodes
+        run: |
+          echo "🔍 Verifying K0s installation..."
+
+          # Check controller
+          echo "Checking controller..."
+          if timeout 60 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@k8s-controller "
+            echo 'Controller status:'
+            sudo systemctl status k0scontroller --no-pager --lines=10 || echo 'k0scontroller service not found'
+            echo '---'
+            echo 'k0s status:'
+            sudo /usr/local/bin/k0s status || echo 'k0s status command failed'
+            echo '---'
+            echo 'k0s version:'
+            /usr/local/bin/k0s version || echo 'k0s binary not found'
+          "; then
+            echo "✅ Controller check completed"
+          else
+            echo "❌ Controller check failed or timed out"
+          fi
+
+          # Check workers
+          for worker in k8s-worker-1 k8s-worker-2; do
+            echo "Checking $worker..."
+            if timeout 30 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 opc@$worker "
+              echo '$worker k0s binary:'
+              /usr/local/bin/k0s version || echo 'k0s binary not found on $worker'
+              echo 'System status:'
+              uptime
+            "; then
+              echo "✅ $worker check completed"
+            else
+              echo "❌ $worker check failed or timed out"
+            fi
+          done
+
+  join-worker1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: wait-for-nodes
+
+    steps:
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Join worker-1 to cluster
+        run: |
+          echo "🔗 Joining worker-1 to K0s cluster..."
+
+          # Get the join token from controller
+          echo "Retrieving join token from controller..."
+          JOIN_TOKEN=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo cat /tmp/worker-token.txt")
+
+          if [ -z "$JOIN_TOKEN" ]; then
+            echo "ERROR: Failed to get join token from controller"
+            exit 1
+          fi
+
+          echo "Installing k0s worker on k8s-worker-1..."
+          if ssh -o StrictHostKeyChecking=no opc@k8s-worker-1 "
+            # Copy token to worker
+            echo '$JOIN_TOKEN' | sudo tee /tmp/join-token.txt > /dev/null
+            
+            # Install and start k0s worker
+            sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
+            sudo systemctl daemon-reload
+            sudo systemctl enable k0sworker
+            sudo systemctl start k0sworker
+
+            # Wait and check service
+            sleep 5
+            if systemctl is-active --quiet k0sworker; then
+              echo 'k0sworker service is running'
+            else
+              echo 'ERROR: k0sworker service failed to start'
+              systemctl status k0sworker --no-pager -l
+              exit 1
+            fi
+
+            # Clean up token
+            sudo rm -f /tmp/join-token.txt
+          "; then
+            echo "✅ Worker-1 joined successfully"
+          else
+            echo "❌ Failed to join worker-1 to cluster"
+            exit 1
+          fi
+
+  join-worker2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: wait-for-nodes
+
+    steps:
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Join worker-2 to cluster
+        run: |
+          echo "🔗 Joining worker-2 to K0s cluster..."
+
+          # Get the join token from controller
+          echo "Retrieving join token from controller..."
+          JOIN_TOKEN=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo cat /tmp/worker-token.txt")
+
+          if [ -z "$JOIN_TOKEN" ]; then
+            echo "ERROR: Failed to get join token from controller"
+            exit 1
+          fi
+
+          echo "Installing k0s worker on k8s-worker-2..."
+          if ssh -o StrictHostKeyChecking=no opc@k8s-worker-2 "
+            # Copy token to worker
+            echo '$JOIN_TOKEN' | sudo tee /tmp/join-token.txt > /dev/null
+            
+            # Install and start k0s worker
+            sudo /usr/local/bin/k0s install worker --token-file /tmp/join-token.txt
+            sudo systemctl daemon-reload
+            sudo systemctl enable k0sworker
+            sudo systemctl start k0sworker
+
+            # Wait and check service
+            sleep 5
+            if systemctl is-active --quiet k0sworker; then
+              echo 'k0sworker service is running'
+            else
+              echo 'ERROR: k0sworker service failed to start'
+              systemctl status k0sworker --no-pager -l
+              exit 1
+            fi
+
+            # Clean up token
+            sudo rm -f /tmp/join-token.txt
+          "; then
+            echo "✅ Worker-2 joined successfully"
+          else
+            echo "❌ Failed to join worker-2 to cluster"
+            exit 1
+          fi
+
+  verify-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [join-worker1, join-worker2]
+
+    steps:
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Verify cluster formation
+        run: |
+          echo "🔍 Verifying cluster formation..."
+
+          # Wait for nodes to appear in cluster
+          echo "Waiting for nodes to be ready in cluster..."
+          sleep 60
+
+          # Verify all nodes are present with retries
+          echo "Verifying cluster nodes..."
+          for i in {1..10}; do
+            echo "Attempt $i/10 - Checking cluster nodes:"
+            NODE_COUNT=$(ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes --no-headers 2>/dev/null | wc -l" || echo "0")
+            echo "Found $NODE_COUNT nodes in cluster"
+            
+            if [ "$NODE_COUNT" -ge 2 ]; then
+              echo "✅ All worker nodes found in cluster (controller is controller-only)"
+              ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide"
+              break
+            else
+              echo "⏳ Only $NODE_COUNT/2 worker nodes found, waiting 15s..."
+              if [ $i -eq 10 ]; then
+                echo "❌ Timeout waiting for worker nodes to join"
+                echo "Current nodes:"
+                ssh -o StrictHostKeyChecking=no opc@k8s-controller "sudo /usr/local/bin/k0s kubectl get nodes -o wide" || echo "Failed to get nodes"
+                echo "Note: Controller is controller-only and won't appear as a node"
+                exit 1
+              fi
+              sleep 15
+            fi
+          done
+
+  configure-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: verify-cluster
+    outputs:
+      cluster_ready: ${{ steps.cluster_status.outputs.ready }}
+
+    steps:
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Label nodes and setup storage
+        run: |
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            echo "🏷️ Labeling nodes..."
+
+            # Wait for nodes to be ready
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=Ready node/k8s-worker-1 --timeout=120s
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=Ready node/k8s-worker-2 --timeout=120s
+
+            # Label worker nodes
+            sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 node-role.kubernetes.io/worker=true --overwrite
+            sudo /usr/local/bin/k0s kubectl label node k8s-worker-2 node-role.kubernetes.io/worker=true --overwrite
+
+            # Add storage label to worker-1
+            sudo /usr/local/bin/k0s kubectl label node k8s-worker-1 storage=local --overwrite
+
+            echo "💾 Creating PersistentVolumes..."
+            
+            # Create prometheus PV
+            cat > /tmp/prometheus-pv.yaml << 'PVEND'
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: prometheus-pv
+            spec:
+              capacity:
+                storage: 20Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-prometheus
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+          PVEND
+            
+            # Create grafana PV
+            cat > /tmp/grafana-pv.yaml << 'PVEND'
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: grafana-pv
+            spec:
+              capacity:
+                storage: 8Gi
+              accessModes:
+                - ReadWriteOnce
+              persistentVolumeReclaimPolicy: Retain
+              storageClassName: local-storage
+              local:
+                path: /mnt/data/k8s-pv-grafana
+              nodeAffinity:
+                required:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: kubernetes.io/hostname
+                      operator: In
+                      values:
+                      - k8s-worker-1
+          PVEND
+            
+            # Apply the PVs
+            sudo /usr/local/bin/k0s kubectl apply -f /tmp/prometheus-pv.yaml
+            sudo /usr/local/bin/k0s kubectl apply -f /tmp/grafana-pv.yaml
+            
+            # Clean up temp files
+            rm -f /tmp/prometheus-pv.yaml /tmp/grafana-pv.yaml
+
+            echo "✅ Nodes labeled and storage configured"
+            sudo /usr/local/bin/k0s kubectl get nodes --show-labels
+            sudo /usr/local/bin/k0s kubectl get pv
+          EOF
+
+      - name: Mark cluster ready
+        id: cluster_status
+        run: |
+          echo "ready=true" >> $GITHUB_OUTPUT
+          echo ""
+          echo "========================================="
+          echo "✅ Cluster Formation Complete!"
+          echo "========================================="
+          echo ""
+          echo "🎛️  Controller: Running k0s control plane"
+          echo "👷 Worker-1: Joined cluster + storage configured"
+          echo "👷 Worker-2: Joined cluster"
+          echo ""
+          echo "🏷️  Node Labels: Applied"
+          echo "💾 Storage: PersistentVolumes created"
+          echo ""
+          echo "🔄 Next Steps:"
+          echo "  1. Deploy application manifests"
+          echo "  2. Configure ingress controller"
+          echo "  3. Verify application deployment"
+          echo "========================================="

@@ -1,0 +1,44 @@
+# ============================================================================
+# REUSABLE ACTION: SETUP CONNECTIVITY
+# ============================================================================
+# Purpose: Configure SSH keys and Tailscale connection for cluster access
+# Used by: All stages that need to connect to K8s instances
+# ============================================================================
+
+name: 'Setup Connectivity'
+description: 'Configure SSH keys and Tailscale connection for cluster access'
+
+inputs:
+  ssh_private_key:
+    description: 'SSH private key for instance access'
+    required: true
+  tailscale_auth_key:
+    description: 'Tailscale auth key for network access'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup SSH keys
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.ssh_private_key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        chmod 700 ~/.ssh
+        echo "🔑 SSH keys configured"
+
+    - name: Setup Tailscale connection
+      uses: tailscale/github-action@v2
+      with:
+        authkey: ${{ inputs.tailscale_auth_key }}
+        tags: tag:private-deploy
+
+    - name: Verify connectivity setup
+      shell: bash
+      run: |
+        echo "🌐 Connectivity setup completed"
+        echo "✅ SSH configured"
+        echo "✅ Tailscale connected"
+        echo "Tailscale status:"
+        tailscale status || echo "Tailscale not yet ready"

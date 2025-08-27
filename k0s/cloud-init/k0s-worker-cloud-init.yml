@@ -186,6 +186,12 @@ runcmd:
       # Allow traffic from private subnet (adjust subnet as needed)
       sudo firewall-cmd --permanent --add-source=10.0.1.0/24
       
+      # Allow pod network traffic (Kubernetes pods)
+      sudo firewall-cmd --permanent --add-source=10.244.0.0/16
+      
+      # Allow service network traffic (Kubernetes services)
+      sudo firewall-cmd --permanent --add-source=10.96.0.0/12
+      
       # Allow specific K0s ports
       sudo firewall-cmd --permanent --add-port=10250/tcp # Kubelet API
       sudo firewall-cmd --permanent --add-port=8132/tcp  # Konnectivity agent

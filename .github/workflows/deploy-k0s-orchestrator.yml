@@ -1,0 +1,178 @@
+# ============================================================================
+# DEPLOYMENT ORCHESTRATOR
+# ============================================================================
+# Purpose: Main entry point that coordinates all deployment stages
+# Routes:
+#   - fresh_deploy: Stages 1→2→3→4 (full infrastructure creation)
+#   - update_cluster: Stages 2→3→4 (skip cleanup, recreate infrastructure) 
+#   - update_app: Call app-only workflow (fast path)
+#
+# This orchestrator:
+# 1. Determines the deployment path based on input
+# 2. Calls the appropriate stage workflows in sequence
+# 3. Passes outputs between stages
+# 4. Provides overall deployment status and summary
+# 5. Handles error propagation across stages
+# ============================================================================
+
+name: Deploy K0s Kubernetes Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_type:
+        description: "Deployment type"
+        required: true
+        default: "fresh_deploy"
+        type: choice
+        options:
+          - "fresh_deploy"
+          - "update_cluster"
+          - "update_app"
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  # ============================================================================
+  # APP-ONLY UPDATE PATH (Fast Route)
+  # ============================================================================
+  update-app-only:
+    if: github.event.inputs.deploy_type == 'update_app'
+    uses: ./.github/workflows/update-app-only.yml
+    secrets: inherit
+
+  # ============================================================================
+  # FULL DEPLOYMENT PATH (Infrastructure + Cluster + Apps)
+  # ============================================================================
+  
+  # Stage 1: Cleanup (Fresh deploys only)
+  stage1-cleanup:
+    if: github.event.inputs.deploy_type == 'fresh_deploy'
+    uses: ./.github/workflows/deploy-k0s-stage1-cleanup.yml
+    secrets: inherit
+
+  # Stage 2: Infrastructure Creation
+  stage2-infrastructure:
+    needs: [stage1-cleanup]
+    # Run if cleanup completed (fresh deploy) or if this is a cluster update
+    if: always() && (github.event.inputs.deploy_type != 'update_app') && (needs.stage1-cleanup.outputs.cleanup_completed == 'true' || github.event.inputs.deploy_type == 'update_cluster')
+    uses: ./.github/workflows/deploy-k0s-stage2-infrastructure.yml
+    with:
+      cleanup_completed: ${{ needs.stage1-cleanup.outputs.cleanup_completed || 'skipped' }}
+      deploy_type: ${{ github.event.inputs.deploy_type }}
+    secrets: inherit
+
+  # Stage 3: Cluster Formation
+  stage3-cluster:
+    needs: [stage2-infrastructure]
+    if: always() && (github.event.inputs.deploy_type != 'update_app') && needs.stage2-infrastructure.result == 'success'
+    uses: ./.github/workflows/deploy-k0s-stage3-cluster.yml
+    secrets: inherit
+
+  # Stage 4: Application Deployment
+  stage4-applications:
+    needs: [stage3-cluster]
+    if: always() && (github.event.inputs.deploy_type != 'update_app') && needs.stage3-cluster.outputs.cluster_ready == 'true'
+    uses: ./.github/workflows/deploy-k0s-stage4-applications.yml
+    secrets: inherit
+
+  # ============================================================================
+  # DEPLOYMENT SUMMARY
+  # ============================================================================
+  deployment-summary:
+    runs-on: ubuntu-latest
+    needs: [update-app-only, stage1-cleanup, stage2-infrastructure, stage3-cluster, stage4-applications]
+    if: always()
+    
+    steps:
+      - name: Determine overall status
+        id: overall_status
+        run: |
+          DEPLOY_TYPE="${{ github.event.inputs.deploy_type }}"
+          
+          if [ "$DEPLOY_TYPE" = "update_app" ]; then
+            # App-only update path
+            if [ "${{ needs.update-app-only.result }}" = "success" ]; then
+              echo "status=success" >> $GITHUB_OUTPUT
+              echo "message=App update completed successfully" >> $GITHUB_OUTPUT
+            else
+              echo "status=failure" >> $GITHUB_OUTPUT
+              echo "message=App update failed" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Full deployment path
+            CLEANUP_STATUS="${{ needs.stage1-cleanup.result }}"
+            INFRA_STATUS="${{ needs.stage2-infrastructure.result }}"
+            CLUSTER_STATUS="${{ needs.stage3-cluster.result }}"
+            APP_STATUS="${{ needs.stage4-applications.result }}"
+            
+            if [ "$DEPLOY_TYPE" = "fresh_deploy" ]; then
+              # Fresh deploy needs all stages
+              if [ "$CLEANUP_STATUS" = "success" ] && [ "$INFRA_STATUS" = "success" ] && [ "$CLUSTER_STATUS" = "success" ] && [ "$APP_STATUS" = "success" ]; then
+                echo "status=success" >> $GITHUB_OUTPUT
+                echo "message=Fresh deployment completed successfully" >> $GITHUB_OUTPUT
+              else
+                echo "status=failure" >> $GITHUB_OUTPUT
+                echo "message=Fresh deployment failed - Cleanup: $CLEANUP_STATUS, Infrastructure: $INFRA_STATUS, Cluster: $CLUSTER_STATUS, Apps: $APP_STATUS" >> $GITHUB_OUTPUT
+              fi
+            else
+              # Cluster update skips cleanup
+              if [ "$INFRA_STATUS" = "success" ] && [ "$CLUSTER_STATUS" = "success" ] && [ "$APP_STATUS" = "success" ]; then
+                echo "status=success" >> $GITHUB_OUTPUT
+                echo "message=Cluster update completed successfully" >> $GITHUB_OUTPUT
+              else
+                echo "status=failure" >> $GITHUB_OUTPUT
+                echo "message=Cluster update failed - Infrastructure: $INFRA_STATUS, Cluster: $CLUSTER_STATUS, Apps: $APP_STATUS" >> $GITHUB_OUTPUT
+              fi
+            fi
+          fi
+
+      - name: Display final summary
+        run: |
+          echo "=================================================================="
+          echo "🎯 DEPLOYMENT SUMMARY"
+          echo "=================================================================="
+          echo ""
+          echo "📋 Deployment Type: ${{ github.event.inputs.deploy_type }}"
+          echo "🎯 Overall Status: ${{ steps.overall_status.outputs.status }}"
+          echo "💬 Message: ${{ steps.overall_status.outputs.message }}"
+          echo ""
+          
+          if [ "${{ github.event.inputs.deploy_type }}" = "update_app" ]; then
+            echo "⚡ Fast App Update Results:"
+            echo "  • Duration: ~2-3 minutes"
+            echo "  • Status: ${{ needs.update-app-only.result }}"
+            echo "  • Website: https://mclaurinquist.com"
+          else
+            echo "🏗️ Full Deployment Results:"
+            echo "  • Stage 1 (Cleanup): ${{ needs.stage1-cleanup.result || 'skipped' }}"
+            echo "  • Stage 2 (Infrastructure): ${{ needs.stage2-infrastructure.result }}"
+            echo "  • Stage 3 (Cluster): ${{ needs.stage3-cluster.result }}"
+            echo "  • Stage 4 (Applications): ${{ needs.stage4-applications.result }}"
+            echo "  • Total Duration: ~15-25 minutes"
+          fi
+          
+          echo ""
+          echo "🔗 Quick Access:"
+          echo "  • SSH to controller: ssh opc@k8s-controller"
+          echo "  • Check pods: sudo /usr/local/bin/k0s kubectl get pods -A"
+          echo "  • Website: https://mclaurinquist.com"
+          echo ""
+          echo "📚 Available Workflows:"
+          echo "  • Fast app updates: update-app-only.yml"
+          echo "  • Full fresh deploy: deploy-k0s-orchestrator.yml (fresh_deploy)"
+          echo "  • Cluster updates: deploy-k0s-orchestrator.yml (update_cluster)"
+          echo ""
+          echo "=================================================================="
+          
+          if [ "${{ steps.overall_status.outputs.status }}" = "failure" ]; then
+            echo "❌ Deployment failed. Check the individual stage logs above."
+            exit 1
+          else
+            echo "✅ Deployment completed successfully!"
+          fi

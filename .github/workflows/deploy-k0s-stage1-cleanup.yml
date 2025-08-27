@@ -1,0 +1,211 @@
+# ============================================================================
+# STAGE 1: INFRASTRUCTURE CLEANUP & PREPARATION
+# ============================================================================
+# Purpose: Clean up existing K8s instances, Tailscale entries, and storage
+# When to use: Fresh deploys only (deploy_type == 'fresh_deploy')
+# Dependencies: None (runs first)
+# Outputs: Cleanup completion status
+#
+# This stage:
+# 1. Finds and removes existing K8s instances from Tailscale network
+# 2. Terminates existing OCI compute instances (controller + workers)
+# 3. Detaches and deletes existing storage volumes
+# 4. Prepares environment for fresh infrastructure creation
+# ============================================================================
+
+name: 'Deploy K0s Stage 1: Cleanup'
+
+on:
+  workflow_call:
+    outputs:
+      cleanup_completed:
+        description: "Whether cleanup completed successfully"
+        value: ${{ jobs.cleanup.outputs.cleanup_completed }}
+
+  workflow_dispatch:
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+  TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      cleanup_completed: ${{ steps.cleanup_status.outputs.completed }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          echo "🔍 Checking required files..."
+          ls -la ./k0s/cloud-init/
+          echo "✅ Controller cloud-init file exists"
+          echo "✅ Worker cloud-init file exists"
+
+      - name: Check for existing K8s instances
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: check_existing
+        continue-on-error: true
+        with:
+          command: >-
+            compute instance list
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}"
+            --lifecycle-state RUNNING
+          query: 'data[?contains(\"display-name\", `k8s-`)].{id: id, name: \"display-name\"}'
+          silent: false
+
+      - name: Clean up existing K8s instances and Tailscale entries
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        run: |
+          echo "Found existing K8s instances, cleaning up..."
+
+          # Remove from Tailscale first
+          for hostname in k8s-controller k8s-worker-1 k8s-worker-2; do
+            echo "Removing $hostname from Tailscale..."
+
+            DEVICE_RESPONSE=$(curl -s -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+              "https://api.tailscale.com/api/v2/tailnet/-/devices")
+
+            nodeId=$(echo "$DEVICE_RESPONSE" | \
+              jq -r --arg hostname "$hostname" '.devices[] | select(.hostname == $hostname) | .nodeId // empty')
+
+            if [ -n "$nodeId" ] && [ "$nodeId" != "null" ]; then
+              curl -s -X DELETE \
+                -H "Authorization: Bearer $TAILSCALE_API_KEY" \
+                "https://api.tailscale.com/api/v2/device/$nodeId"
+              echo "✅ Removed $hostname from Tailscale"
+            fi
+          done
+
+          echo "Tailscale cleanup complete"
+
+      - name: Find and terminate controller instance
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        run: |
+          echo "🔍 Finding controller instance..."
+          
+          CONTROLLER_ID=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --lifecycle-state RUNNING \
+            --query 'data[?contains("display-name", `k8s-controller`)].id | [0]' \
+            --raw-output 2>/dev/null | tr -d '\n\r"' || echo "")
+          
+          if [ -n "$CONTROLLER_ID" ] && [ "$CONTROLLER_ID" != "null" ] && [ "$CONTROLLER_ID" != "[]" ]; then
+            echo "Terminating controller instance: $CONTROLLER_ID"
+            oci compute instance terminate \
+              --instance-id "$CONTROLLER_ID" \
+              --force
+            echo "✅ Controller termination initiated"
+          else
+            echo "No controller instance found"
+          fi
+
+      - name: Find and terminate worker-1 instance
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        run: |
+          echo "🔍 Finding worker-1 instance..."
+          
+          WORKER1_ID=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --lifecycle-state RUNNING \
+            --query 'data[?contains("display-name", `k8s-worker-1`)].id | [0]' \
+            --raw-output 2>/dev/null | tr -d '\n\r"' || echo "")
+          
+          if [ -n "$WORKER1_ID" ] && [ "$WORKER1_ID" != "null" ] && [ "$WORKER1_ID" != "[]" ]; then
+            echo "Terminating worker-1 instance: $WORKER1_ID"
+            oci compute instance terminate \
+              --instance-id "$WORKER1_ID" \
+              --force
+            echo "✅ Worker-1 termination initiated"
+          else
+            echo "No worker-1 instance found"
+          fi
+
+      - name: Find and terminate worker-2 instance
+        if: ${{ !contains(steps.check_existing.outputs.output, '[]') && steps.check_existing.outputs.output != '' }}
+        run: |
+          echo "🔍 Finding worker-2 instance..."
+          
+          WORKER2_ID=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --lifecycle-state RUNNING \
+            --query 'data[?contains("display-name", `k8s-worker-2`)].id | [0]' \
+            --raw-output 2>/dev/null | tr -d '\n\r"' || echo "")
+          
+          if [ -n "$WORKER2_ID" ] && [ "$WORKER2_ID" != "null" ] && [ "$WORKER2_ID" != "[]" ]; then
+            echo "Terminating worker-2 instance: $WORKER2_ID"
+            oci compute instance terminate \
+              --instance-id "$WORKER2_ID" \
+              --force
+            echo "✅ Worker-2 termination initiated"
+          else
+            echo "No worker-2 instance found"
+          fi
+
+      - name: Clean up worker-1 storage volume
+        run: |
+          echo "🔍 Looking for existing worker-1 data volume..."
+          
+          VOLUME_ID=$(oci bv volume list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --display-name "k8s-worker-1-data" \
+            --lifecycle-state AVAILABLE \
+            --query "data[0].id" \
+            --raw-output 2>/dev/null | tr -d '\n\r"' || echo "")
+          
+          if [ -n "$VOLUME_ID" ] && [ "$VOLUME_ID" != "null" ] && [ "$VOLUME_ID" != "[]" ]; then
+            echo "Found existing volume: $VOLUME_ID"
+            
+            # Check for volume attachments
+            echo "Checking for volume attachments..."
+            ATTACHMENTS=$(oci compute volume-attachment list \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --volume-id "$VOLUME_ID" 2>/dev/null || echo '{"data":[]}')
+            
+            # Parse and detach if needed
+            ATTACHMENT_IDS=$(echo "$ATTACHMENTS" | jq -r '.data[]?.id // empty' 2>/dev/null || echo "")
+            
+            if [ -n "$ATTACHMENT_IDS" ]; then
+              echo "Detaching volume..."
+              echo "$ATTACHMENT_IDS" | while read -r attachment_id; do
+                if [ -n "$attachment_id" ] && [ "$attachment_id" != "null" ]; then
+                  echo "Detaching: $attachment_id"
+                  oci compute volume-attachment detach \
+                    --volume-attachment-id "$attachment_id" \
+                    --force \
+                    --wait-for-state DETACHED || echo "Failed to detach $attachment_id"
+                fi
+              done
+              echo "Waiting for detachment to complete..."
+              sleep 15
+            fi
+            
+            # Delete the volume
+            echo "Deleting volume: $VOLUME_ID"
+            oci bv volume delete \
+              --volume-id "$VOLUME_ID" \
+              --force
+            echo "✅ Volume deletion initiated"
+          else
+            echo "No existing worker-1 volume found"
+          fi
+
+      - name: Mark cleanup complete
+        id: cleanup_status
+        run: |
+          echo "completed=true" >> $GITHUB_OUTPUT
+          echo "✅ Cleanup phase completed successfully"
+          echo ""
+          echo "📋 Cleanup Summary:"
+          echo "- Removed instances from Tailscale network"
+          echo "- Terminated existing K8s instances"
+          echo "- Cleaned up storage volumes"
+          echo "- Environment ready for fresh deployment"

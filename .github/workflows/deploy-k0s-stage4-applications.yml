@@ -1,0 +1,228 @@
+# ============================================================================
+# STAGE 4: APPLICATION DEPLOYMENT
+# ============================================================================
+# Purpose: Deploy Cloudflare tunnel controller and web applications
+# When to use: Fresh deploys, cluster updates, and full app deployments
+# Dependencies: Stage 3 (cluster)
+# Outputs: Deployment status
+#
+# This stage:
+# 1. Installs Helm on the controller node
+# 2. Deploys Cloudflare Tunnel Ingress Controller via Helm chart
+# 3. Deploys web application manifests (namespace, deployment, service, ingress)
+# 4. Verifies all deployments are running correctly
+# 5. Tests internal connectivity between services
+# 6. Provides deployment summary and next steps
+# ============================================================================
+
+name: 'Deploy K0s Stage 4: Applications'
+
+on:
+  workflow_call:
+    outputs:
+      deployment_status:
+        description: "Application deployment status"
+        value: ${{ jobs.deploy-applications.outputs.deployment_status }}
+
+  workflow_dispatch:
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  deploy-applications:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      deployment_status: ${{ steps.deployment_status.outputs.status }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          echo "🚀 Deploying Kubernetes manifests..."
+
+          # Copy manifests to controller
+          scp -r -o StrictHostKeyChecking=no ./k0s/manifests opc@k8s-controller:/tmp/
+
+          # Deploy on controller using Helm for Cloudflare controller
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            cd /tmp/manifests
+
+            # Install Helm if not already installed
+            if ! command -v helm &> /dev/null; then
+              echo "Installing Helm..."
+              curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+              chmod 700 get_helm.sh
+              ./get_helm.sh
+              rm get_helm.sh
+            fi
+
+            # Apply basic namespaces first
+            echo "Creating namespaces..."
+            sudo /usr/local/bin/k0s kubectl apply -f 01-namespace.yaml
+
+            # Deploy Cloudflare Tunnel Ingress Controller using Helm
+            echo "Adding Helm repository for Cloudflare controller..."
+            helm repo add strrl https://helm.strrl.dev/ || true
+            helm repo update
+
+            echo "Deploying Cloudflare tunnel controller via Helm..."
+            helm upgrade --install --wait \
+              -n cloudflare-tunnel --create-namespace \
+              cloudflare-tunnel-ingress-controller \
+              strrl/cloudflare-tunnel-ingress-controller \
+              --set=cloudflare.apiToken="${{ secrets.CLOUDFLARE_K0S_TOKEN }}" \
+              --set=cloudflare.accountId="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
+              --set=cloudflare.tunnelName="webserver-staging" \
+              --timeout=300s
+
+            echo "Verifying Cloudflare controller deployment..."
+            sudo /usr/local/bin/k0s kubectl get pods -n cloudflare-tunnel -o wide
+            sudo /usr/local/bin/k0s kubectl get ingressclass
+            
+            # Check controller logs
+            echo "Controller logs:"
+            sudo /usr/local/bin/k0s kubectl logs -n cloudflare-tunnel -l app.kubernetes.io/name=cloudflare-tunnel-ingress-controller --tail=50 || echo "No logs available yet"
+
+            echo "Deploying web application..."
+            sudo /usr/local/bin/k0s kubectl apply -f 04-webserver/
+
+            echo "Waiting for web deployment..."
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=available --timeout=300s \
+              deployment/webserver -n webserver
+
+            echo "✅ All manifests deployed"
+          EOF
+
+      - name: Verify deployment
+        run: |
+          echo "🔍 Deployment Verification"
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            echo "📊 Cluster Status:"
+            echo "=================="
+            sudo /usr/local/bin/k0s kubectl get nodes -o wide
+
+            echo -e "\n📦 All Pods:"
+            echo "============"
+            sudo /usr/local/bin/k0s kubectl get pods -A -o wide
+
+            echo -e "\n🌐 Services:"
+            echo "============"
+            sudo /usr/local/bin/k0s kubectl get svc -A
+
+            echo -e "\n🚪 Ingress:"
+            echo "==========="
+            sudo /usr/local/bin/k0s kubectl get ingress -A
+
+            echo -e "\n🌍 Web Application Pods:"
+            echo "========================"
+            sudo /usr/local/bin/k0s kubectl get pods -n webserver -o wide
+
+            echo -e "\n📝 Cloudflare Controller Status:"
+            echo "================================"
+            sudo /usr/local/bin/k0s kubectl get deployment -n cloudflare-tunnel
+
+            # Get controller logs
+            POD=$(sudo /usr/local/bin/k0s kubectl get pods -n cloudflare-tunnel -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if [ -n "$POD" ]; then
+              echo -e "\nController logs (last 20 lines):"
+              sudo /usr/local/bin/k0s kubectl logs -n cloudflare-tunnel $POD --tail=20 || echo "Logs not yet available"
+            fi
+          EOF
+
+      - name: Test internal connectivity
+        run: |
+          echo "🧪 Testing web service internally..."
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            # Check service endpoints first
+            echo "Service endpoints:"
+            sudo /usr/local/bin/k0s kubectl get endpoints -n webserver
+            echo ""
+            
+            # Test connectivity using a job instead of interactive pod
+            echo "Testing web service connectivity..."
+            
+            # Create test job manifest
+            cat > /tmp/test-connectivity-job.yaml << 'JOBEND'
+            apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: test-connectivity
+              namespace: webserver
+            spec:
+              ttlSecondsAfterFinished: 300
+              template:
+                spec:
+                  restartPolicy: Never
+                  containers:
+                  - name: curl-test
+                    image: docker.io/curlimages/curl:latest
+                    command: ["curl"]
+                    args: ["-s", "-o", "/dev/null", "-w", "HTTP Status: %{http_code}\n", "http://webserver-service"]
+          JOBEND
+            
+            # Apply the job
+            sudo /usr/local/bin/k0s kubectl apply -f /tmp/test-connectivity-job.yaml
+            
+            # Wait for job completion
+            echo "Waiting for connectivity test to complete..."
+            sudo /usr/local/bin/k0s kubectl wait --for=condition=complete --timeout=60s job/test-connectivity -n webserver
+            
+            # Get the results
+            echo "Test results:"
+            sudo /usr/local/bin/k0s kubectl logs job/test-connectivity -n webserver
+            
+            # Clean up
+            sudo /usr/local/bin/k0s kubectl delete job test-connectivity -n webserver
+            rm -f /tmp/test-connectivity-job.yaml
+          EOF
+
+      - name: Mark deployment complete
+        id: deployment_status
+        run: |
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "✅ Application deployment completed successfully"
+
+      - name: Display deployment summary
+        run: |
+          echo "========================================="
+          echo "🎉 K0s Kubernetes Cluster Deployed!"
+          echo "========================================="
+          echo ""
+          echo "🖥️  Cluster Access:"
+          echo "  SSH: ssh opc@k8s-controller"
+          echo "  Kubectl: sudo /usr/local/bin/k0s kubectl get pods -A"
+          echo ""
+          echo "🌐 Application:"
+          echo "  Domain: mclaurinquist.com"
+          echo "  Replicas: 2 (distributed across workers)"
+          echo ""
+          echo "📊 Resource Usage:"
+          echo "  Controller: 1 OCPU, 6GB RAM (k0s control plane)"
+          echo "  Worker-1: 1 OCPU, 6GB RAM + 50GB storage"
+          echo "  Worker-2: 1 OCPU, 6GB RAM"
+          echo "  Total: 3/4 OCPUs, 18/24GB RAM used"
+          echo ""
+          echo "🔍 Useful Commands:"
+          echo "  Watch pods: watch 'sudo /usr/local/bin/k0s kubectl get pods -A'"
+          echo "  App logs: sudo /usr/local/bin/k0s kubectl logs -f -n webserver deployment/webserver"
+          echo "  Node resources: sudo /usr/local/bin/k0s kubectl top nodes"
+          echo ""
+          echo "📈 Next Steps:"
+          echo "  1. Verify website at https://mclaurinquist.com"
+          echo "  2. Test rolling updates with update-app-only workflow"
+          echo "  3. Add monitoring stack when ready"
+          echo "========================================="

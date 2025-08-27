@@ -1,0 +1,142 @@
+# ============================================================================
+# APP-ONLY UPDATE WORKFLOW
+# ============================================================================
+# Purpose: Fast webserver container updates with Cloudflare cache purge
+# When to use: Quick app deployments without infrastructure changes
+# Dependencies: Existing running K8s cluster with accessible controller
+# Duration: ~2-3 minutes vs ~20+ minutes for full deploy
+# 
+# This workflow:
+# 1. Connects to existing K8s controller via Tailscale
+# 2. Updates only the webserver container image
+# 3. Verifies rollout completion
+# 4. Purges Cloudflare cache
+# ============================================================================
+
+name: Update App Only (Fast)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Container image tag to deploy"
+        required: false
+        default: "latest"
+        type: string
+
+  workflow_call:
+    inputs:
+      image_tag:
+        description: "Container image tag to deploy"
+        required: false
+        default: "latest"
+        type: string
+
+env:
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+
+jobs:
+  update-webserver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup connectivity
+        uses: ./.github/actions/setup-connectivity
+        with:
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tailscale_auth_key: ${{ secrets.PRIVATE_TAILSCALE_KEY }}
+
+      - name: Update webserver container
+        run: |
+          echo "🔄 Updating webserver container to image tag: ${{ inputs.image_tag || 'latest' }}"
+          
+          # Test controller connectivity first
+          if ! timeout 10 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes opc@k8s-controller "echo 'Controller accessible'" 2>/dev/null; then
+            echo "❌ Cannot reach k8s-controller via Tailscale"
+            echo "Please ensure:"
+            echo "  1. K8s cluster is running"
+            echo "  2. Controller node is accessible via Tailscale"
+            echo "  3. SSH keys are properly configured"
+            exit 1
+          fi
+          
+          # Perform the update
+          ssh -o StrictHostKeyChecking=no opc@k8s-controller << 'EOF'
+            set -e
+            
+            echo "📊 Current webserver deployment status:"
+            sudo /usr/local/bin/k0s kubectl get deployment/webserver -n webserver -o wide
+            
+            echo ""
+            echo "🔄 Updating webserver image..."
+            sudo /usr/local/bin/k0s kubectl set image deployment/webserver \
+              nginx=ghcr.io/verilypete/webserver:${{ inputs.image_tag || 'latest' }} \
+              -n webserver
+            
+            echo ""
+            echo "⏳ Waiting for rollout to complete..."
+            if sudo /usr/local/bin/k0s kubectl rollout status deployment/webserver -n webserver --timeout=300s; then
+              echo "✅ Rollout completed successfully"
+            else
+              echo "❌ Rollout failed or timed out"
+              sudo /usr/local/bin/k0s kubectl get pods -n webserver -o wide
+              sudo /usr/local/bin/k0s kubectl describe deployment/webserver -n webserver
+              exit 1
+            fi
+            
+            echo ""
+            echo "📋 Updated pod details:"
+            sudo /usr/local/bin/k0s kubectl get pods -n webserver -o wide
+            
+            # Verify all replicas are running
+            READY=$(sudo /usr/local/bin/k0s kubectl get deployment webserver -n webserver -o jsonpath='{.status.readyReplicas}')
+            DESIRED=$(sudo /usr/local/bin/k0s kubectl get deployment webserver -n webserver -o jsonpath='{.spec.replicas}')
+            
+            if [ "$READY" = "$DESIRED" ]; then
+              echo "✅ All $READY replicas are running and ready"
+            else
+              echo "⚠️  Only $READY of $DESIRED replicas are ready"
+              exit 1
+            fi
+          EOF
+
+      - name: Purge Cloudflare cache
+        run: |
+          echo "🔄 Purging Cloudflare cache for updated content..."
+          
+          response=$(curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_STAGING_ZONE_ID }}/purge_cache" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_K0S_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"purge_everything":true}')
+          
+          if echo "$response" | grep -q '"success":true'; then
+            echo "✅ Cloudflare cache purged successfully"
+          else
+            echo "⚠️  Cache purge may have failed: $response"
+            echo "Manual cache purge may be required"
+          fi
+
+      - name: Display update summary
+        run: |
+          echo ""
+          echo "========================================="
+          echo "✅ App Update Complete!"
+          echo "========================================="
+          echo "🚀 Updated image: ghcr.io/verilypete/webserver:${{ inputs.image_tag || 'latest' }}"
+          echo "🌐 Website: https://mclaurinquist.com"
+          echo "💾 Cache: Purged"
+          echo ""
+          echo "🔍 Verification commands:"
+          echo "  ssh opc@k8s-controller"
+          echo "  sudo /usr/local/bin/k0s kubectl get pods -n webserver -o wide"
+          echo "  sudo /usr/local/bin/k0s kubectl logs -f deployment/webserver -n webserver"
+          echo "========================================="
