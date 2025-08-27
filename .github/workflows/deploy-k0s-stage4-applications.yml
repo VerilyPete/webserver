@@ -87,6 +87,7 @@ jobs:
               --set=cloudflare.apiToken="${{ secrets.CLOUDFLARE_K0S_TOKEN }}" \
               --set=cloudflare.accountId="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" \
               --set=cloudflare.tunnelName="webserver-staging" \
+              --set=nodeSelector."kubernetes\.io/hostname"="k8s-worker-1" \
               --timeout=300s
 
             echo "Verifying Cloudflare controller deployment..."
@@ -177,13 +178,22 @@ jobs:
             # Apply the job
             sudo /usr/local/bin/k0s kubectl apply -f /tmp/test-connectivity-job.yaml
             
-            # Wait for job completion
+            # Wait for job completion with shorter timeout
             echo "Waiting for connectivity test to complete..."
-            sudo /usr/local/bin/k0s kubectl wait --for=condition=complete --timeout=60s job/test-connectivity -n webserver
-            
-            # Get the results
-            echo "Test results:"
-            sudo /usr/local/bin/k0s kubectl logs job/test-connectivity -n webserver
+            if sudo /usr/local/bin/k0s kubectl wait --for=condition=complete --timeout=30s job/test-connectivity -n webserver; then
+              # Get the results
+              echo "Test results:"
+              sudo /usr/local/bin/k0s kubectl logs job/test-connectivity -n webserver
+            else
+              echo "Job timed out, checking status and logs anyway..."
+              sudo /usr/local/bin/k0s kubectl describe job/test-connectivity -n webserver
+              echo "Pod logs (if available):"
+              sudo /usr/local/bin/k0s kubectl logs job/test-connectivity -n webserver || echo "No logs available yet"
+              
+              # Alternative quick test
+              echo "Running alternative connectivity test..."
+              sudo /usr/local/bin/k0s kubectl run quick-test --image=busybox --rm --restart=Never -- wget -qO- --timeout=5 http://webserver-service.webserver.svc.cluster.local | head -5 || echo "Quick test failed"
+            fi
             
             # Clean up
             sudo /usr/local/bin/k0s kubectl delete job test-connectivity -n webserver

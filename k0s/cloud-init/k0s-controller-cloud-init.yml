@@ -218,6 +218,12 @@ runcmd:
       # Allow service network traffic (Kubernetes services)
       sudo firewall-cmd --permanent --add-source=10.96.0.0/12
       
+      # Allow ICMP (ping) traffic for pod network
+      sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.244.0.0/16" protocol value="icmp" accept'
+      
+      # Allow all pod network traffic (bypass kube-router restrictions)
+      sudo iptables -I FORWARD 1 -s 10.244.0.0/16 -d 10.244.0.0/16 -j ACCEPT
+      
       # Allow specific K0s ports
       sudo firewall-cmd --permanent --add-port=6443/tcp  # K0s API server
       sudo firewall-cmd --permanent --add-port=9443/tcp  # K0s controller join API
