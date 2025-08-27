@@ -91,9 +91,40 @@ jobs:
             --max-wait-seconds 600
           silent: false
 
+      - name: Extract controller instance ID
+        id: parse_controller_id
+        run: |
+          # Parse JSON output to extract instance ID
+          CONTROLLER_OUTPUT='${{ steps.create_controller.outputs.output }}'
+          CONTROLLER_JSON=$(echo "$CONTROLLER_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          CONTROLLER_ID=$(echo "$CONTROLLER_JSON" | jq -r '.data.id')
+          echo "controller_id=$CONTROLLER_ID" >> $GITHUB_OUTPUT
+          echo "Parsed controller ID: $CONTROLLER_ID"
+
+      - name: Get controller VNIC ID
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: get_controller_vnic
+        with:
+          command: >-
+            compute instance list-vnics
+            --instance-id "${{ steps.parse_controller_id.outputs.controller_id }}"
+            --query "data[0].id"
+            --raw-output
+          silent: false
+
+      - name: Disable source/destination check on controller VNIC
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            network vnic update
+            --vnic-id "${{ steps.get_controller_vnic.outputs.output }}"
+            --skip-source-dest-check true
+          silent: false
+
       - name: Controller creation summary
         run: |
           echo "🎛️ Controller instance created successfully"
+          echo "✅ Source/destination check disabled on controller VNIC"
           echo "Instance details: ${{ steps.create_controller.outputs.output }}"
 
   create-worker2:
@@ -125,9 +156,40 @@ jobs:
             --max-wait-seconds 600
           silent: false
 
+      - name: Extract worker-2 instance ID
+        id: parse_worker2_id
+        run: |
+          # Parse JSON output to extract instance ID
+          WORKER2_OUTPUT='${{ steps.create_worker2.outputs.output }}'
+          WORKER2_JSON=$(echo "$WORKER2_OUTPUT" | sed 's/^"//; s/"$//; s/\\"/"/g')
+          WORKER2_ID=$(echo "$WORKER2_JSON" | jq -r '.data.id')
+          echo "worker2_id=$WORKER2_ID" >> $GITHUB_OUTPUT
+          echo "Parsed worker-2 ID: $WORKER2_ID"
+
+      - name: Get worker-2 VNIC ID
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: get_worker2_vnic
+        with:
+          command: >-
+            compute instance list-vnics
+            --instance-id "${{ steps.parse_worker2_id.outputs.worker2_id }}"
+            --query "data[0].id"
+            --raw-output
+          silent: false
+
+      - name: Disable source/destination check on worker-2 VNIC
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            network vnic update
+            --vnic-id "${{ steps.get_worker2_vnic.outputs.output }}"
+            --skip-source-dest-check true
+          silent: false
+
       - name: Worker-2 creation summary
         run: |
           echo "👷 Worker-2 instance created successfully"
+          echo "✅ Source/destination check disabled on worker-2 VNIC"
           echo "Instance details: ${{ steps.create_worker2.outputs.output }}"
 
   create-worker1-with-storage:
@@ -204,10 +266,31 @@ jobs:
             --wait-for-state ATTACHED
           silent: false
 
+      - name: Get worker-1 VNIC ID
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        id: get_worker1_vnic
+        with:
+          command: >-
+            compute instance list-vnics
+            --instance-id "${{ steps.parse_attachment_ids.outputs.worker_id }}"
+            --query "data[0].id"
+            --raw-output
+          silent: false
+
+      - name: Disable source/destination check on worker-1 VNIC
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            network vnic update
+            --vnic-id "${{ steps.get_worker1_vnic.outputs.output }}"
+            --skip-source-dest-check true
+          silent: false
+
       - name: Confirm worker-1 and volume creation
         run: |
           echo "👷 Worker-1 instance created successfully"
           echo "💾 Block volume created and attached successfully"
+          echo "✅ Source/destination check disabled on worker-1 VNIC"
           echo "Worker ID: ${{ steps.parse_attachment_ids.outputs.worker_id }}"
           echo "Volume ID: ${{ steps.parse_attachment_ids.outputs.volume_id }}"
 
@@ -224,9 +307,9 @@ jobs:
           echo "✅ Infrastructure Creation Complete!"
           echo "========================================="
           echo ""
-          echo "🎛️  Controller: Created and running"
-          echo "👷 Worker-1: Created with 50GB storage"
-          echo "👷 Worker-2: Created and running"
+          echo "🎛️  Controller: Created and running (src/dst check disabled)"
+          echo "👷 Worker-1: Created with 50GB storage (src/dst check disabled)"
+          echo "👷 Worker-2: Created and running (src/dst check disabled)"
           echo ""
           echo "📊 Resource Allocation:"
           echo "  Controller: 1 OCPU, 6GB RAM"

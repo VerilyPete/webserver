@@ -198,6 +198,15 @@ runcmd:
       # Allow all pod network traffic (bypass kube-router restrictions)
       sudo iptables -I FORWARD 1 -s 10.244.0.0/16 -d 10.244.0.0/16 -j ACCEPT
       
+      # Make iptables rules persistent 
+      sudo iptables-save > /etc/iptables/rules.v4 || sudo mkdir -p /etc/iptables && sudo iptables-save > /etc/iptables/rules.v4
+      
+      # Ensure iptables rules are restored on boot
+      echo '#!/bin/bash' > /etc/rc.local
+      echo 'iptables-restore < /etc/iptables/rules.v4' >> /etc/rc.local
+      echo 'exit 0' >> /etc/rc.local
+      chmod +x /etc/rc.local
+      
       # Allow specific K0s ports
       sudo firewall-cmd --permanent --add-port=10250/tcp # Kubelet API
       sudo firewall-cmd --permanent --add-port=8132/tcp  # Konnectivity agent
